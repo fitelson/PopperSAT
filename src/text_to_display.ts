@@ -968,8 +968,7 @@ type ModelFinderState2 =
 type ModelFinderDisplay = {
   element: HTMLElement
   state: rEditable<ModelFinderState2>
-  // start_search: (ctx: Context, constraints: Constraint[], is_regular: boolean) => Promise<void>
-  start_search_solver: (solver: WrappedSolver, constraints: Constraint[], is_regular: boolean) => Promise<void>
+  start_search_solver: (solver: WrappedSolver, constraints: Constraint[]) => Promise<void>
   invalidate: () => void
 }
 
@@ -1276,20 +1275,12 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
   const generate_button = tel(TestId.find_model, 'input', { type: 'button', value: Constants.FIND_MODEL_BUTTON_LABEL, class: 'generate' }) as HTMLButtonElement
   const cancel_button = tel(TestId.cancel_id, 'input', { type: 'button', value: Constants.CANCEL_BUTTON_LABEL, style: 'margin-top: 0.4em;' }) as HTMLButtonElement
   const z3_status_container = tel(TestId.z3_status, 'div', { style: 'margin-bottom: 0.4em;' })
-  const is_regular = new Editable(false)
-  const regular_toggle = tel(TestId.regular_toggle, 'input', { type: 'checkbox', style: 'margin-left: 0.4em;' }, 'Regular') as HTMLInputElement
   const timeout_ms = new Editable(Constants.DEFAULT_SOLVE_TIMEOUT_MS)
   const timeout_input = timeout(timeout_ms)
   timeout_ms.watch((ms) => { console.log('timeout set to:', ms) })
   const generate_line = el('div', { style: 'display: flex;' },
     generate_button,
-    // el('input', { type: 'button', value: Constants.FIND_MODEL_BUTTON_LABEL, class: 'generate' }) as HTMLButtonElement,
-    // options_button,
     el('div', { style: 'display: flex; flex-direction: column; margin-left: 0.4em;' },
-      el('label', {},
-        'Regular:',
-        regular_toggle,
-      ),
       el('label', { style: 'display: flex;' },
         el('span', { style: 'margin-right: 1ch;' }, 'Timeout:'),
         timeout_input,
@@ -1307,15 +1298,8 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
     }
   }
 
-  is_regular.watch(() => {
-    invalidate()
-  })
-
   constraint_block.on_ready((all_constraints) => {
     set_all_constraints(all_constraints)
-  })
-  regular_toggle.addEventListener('change', () => {
-    is_regular.set(regular_toggle.checked)
   })
 
   // const load_z3 = async (): Promise<Context> => {
@@ -1427,7 +1411,7 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
     generate_button.addEventListener('click', async () => {
       assert(state2.get().tag !== 'looking', 'Trying to generate another model while looking for stuff!')
       const constraints = assert_exists(constraint_block.get_output(), 'Generate button clicked but not all constraints ready!')
-      await start_search_solver(solver, constraints, is_regular.get())
+      await start_search_solver(solver, constraints)
     })
     cancel_button.onclick = () => {
       const state = state2.get()
@@ -1485,7 +1469,7 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
     }
   })().catch(() => {})
 
-  const start_search_solver = async (solver: WrappedSolver, constraints: Constraint[], _is_regular: boolean): Promise<void> => {
+  const start_search_solver = async (solver: WrappedSolver, constraints: Constraint[]): Promise<void> => {
     const truth_table = new TruthTable(variables_in_constraints(constraints))
     // state.set({ tag: 'looking', truth_table })
     const abort_controller = new AbortController()
@@ -2019,20 +2003,7 @@ const main = (): HTMLElement => {
 
   return el('div', {},
     el('div', { class: 'header' },
-      el('div', { style: 'font-weight: bold; font-size: 1.5em;' }, 'PrSAT 3.0'),
-      el('br', {}),
-      el('div', {},
-        'For more information regarding syntax, usage, etc., see the ',
-        el('a', { href: 'https://fitelson.org/PrSAT/', target: '_blank' }, 'official PrSAT 3.0 webpage'),
-        '.',
-      ),
-      el('br', {}),
-      el('div', {},
-        el('a', { href: 'https://youtu.be/F_WbzKr7qJQ', target: '_blank' }, 'Here'),
-        ' is a brief video demo of the software. The text file for the demo can be downloaded ',
-        el('a', { href: 'https://fitelson.org/PrSAT/PrSAT_3.0_demo_examples.txt', target: '_blank' }, 'here'),
-        '.',
-      ),
+      el('div', { style: 'font-weight: bold; font-size: 1.5em;' }, 'PopperSAT'),
     ),
     // throw_button,
     global_error_display,
