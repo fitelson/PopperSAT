@@ -122,7 +122,7 @@ const ConstraintLang = P.createLanguage({
     P.seq(r.ProbabilityLead, P.optWhitespace, r.Sentence, P.optWhitespace, P.string('|'), P.optWhitespace, r.Sentence, P.optWhitespace, P.string(')'))
       .map(([_lp, _lw, s, _mlw, _sep, _mrw, r]) => cpr(s, r)),
     r.ProbabilityLead.then(P.optWhitespace).then(r.Sentence).skip(P.optWhitespace).skip(P.string(')'))
-      .chain(() => P.fail('Popper probability requires a conditioning event. Write Pr(A | ⊤) instead of Pr(A)')),
+      .chain(() => P.fail('Popper probability requires a conditioning event. Write Pr(A | t) instead of Pr(A)')),
     P.regexp(/[0-9]+(\.[0-9]+)?/).map((n) => parseFloat(n)),
     P.regexp(/[A-Za-z]+/).map((n) => vbl(n)),
     // P.regexp(/[0-9]+/).map((n) => parseInt(n)),
@@ -141,8 +141,8 @@ const ConstraintLang = P.createLanguage({
   SentenceFactor: (r) => P.alt(
     r.Not,
     r.WrappedSentence,
-    P.string('true').or(P.string('⊤')).map(() => val(true)),
-    P.string('false').or(P.string('⊥')).map(() => val(false)),
+    P.string('true').or(P.string('⊤')).or(P.string('t')).map(() => val(true)),
+    P.string('false').or(P.string('⊥')).or(P.string('f')).map(() => val(false)),
     r.SL
   ),
   WrappedSentence: (r) => P.seq(P.string('('), P.optWhitespace, r.Sentence, P.optWhitespace, P.string(')'))
