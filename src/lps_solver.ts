@@ -16,7 +16,7 @@
 import { TruthTable } from "./pr_sat"
 import { PrSat } from "./types"
 import { Proposition, entails, conjoin, PopperModel } from "./popper"
-import { WrappedSolver, WrappedSolverResult } from "./z3_integration"
+import { WrappedSolver, WrappedSolverResult, ExactNumber, EXACT_ZERO, EXACT_ONE, exactAdd, exactDiv, exactIsZero, exactToFloat, exactToString, exactFromRational, rationalFromInt } from "./z3_integration"
 
 type RealExpr = PrSat['RealExpr']
 type Constraint = PrSat['Constraint']
@@ -196,10 +196,13 @@ export type LPSModel = {
   /** Layer assignment for each conditioning event */
   layerAssignment: LayerAssignment
 
-  /** Probability values at each layer: layerValues[k][stateIndex] = μ_k(state) */
-  layerValues: Map<number, Map<number, number>>
+  /** Probability values at each layer: layerValues[k][stateIndex] = μ_k(state) as exact number */
+  layerValues: Map<number, Map<number, ExactNumber>>
 
-  /** Get P(φ | ψ) for propositions */
+  /** Get P(φ | ψ) as exact number (rational if possible, float for irrationals) */
+  conditionalProbabilityExact: (phi: Proposition, psi: Proposition) => ExactNumber
+
+  /** Get P(φ | ψ) as float (for backward compatibility) */
   conditionalProbability: (phi: Proposition, psi: Proposition) => number
 }
 
@@ -207,6 +210,19 @@ export type LPSModel = {
  * Create a PopperModel from an LPSModel for use in the UI.
  */
 export function lpsModelToPopperModel(_tt: TruthTable, lpsModel: LPSModel): PopperModel {
+  // Debug: log the model structure once
+  console.log('lpsModelToPopperModel: numLayers =', lpsModel.numLayers)
+  console.log('lpsModelToPopperModel: layerAssignment size =', lpsModel.layerAssignment.size)
+  console.log('lpsModelToPopperModel: layerValues size =', lpsModel.layerValues.size)
+  for (const [k, layerMap] of lpsModel.layerValues.entries()) {
+    console.log(`  Layer ${k}: ${layerMap.size} entries`)
+    for (const [state, val] of layerMap.entries()) {
+      if (!exactIsZero(val)) {
+        console.log(`    state ${state} = ${exactToString(val)}`)
+      }
+    }
+  }
+
   return {
     isAbnormal: (prop: Proposition) => {
       // A proposition is abnormal if it has zero mass at all layers
@@ -227,18 +243,24 @@ export function lpsModelToPopperModel(_tt: TruthTable, lpsModel: LPSModel): Popp
       for (let k = 1; k <= lpsModel.numLayers; k++) {
         const layerVals = lpsModel.layerValues.get(k)
         if (layerVals) {
-          let mass = 0
+          let mass: ExactNumber = EXACT_ZERO
           for (const state of prop) {
-            mass += layerVals.get(state) ?? 0
+            mass = exactAdd(mass, layerVals.get(state) ?? EXACT_ZERO)
           }
-          if (mass > 0) return false
+          if (!exactIsZero(mass)) return false
         }
       }
       return true
     },
 
     conditionalProbability: (phi: Proposition, psi: Proposition) => {
+      console.log(`PopperModel.conditionalProbability wrapper called`)
       return lpsModel.conditionalProbability(phi, psi)
+    },
+
+    conditionalProbabilityExact: (phi: Proposition, psi: Proposition) => {
+      console.log(`PopperModel.conditionalProbabilityExact wrapper called`)
+      return lpsModel.conditionalProbabilityExact(phi, psi)
     }
   }
 }
@@ -249,40 +271,41 @@ export function lpsModelToPopperModel(_tt: TruthTable, lpsModel: LPSModel): Popp
  */
 export function createStubLPSModel(tt: TruthTable): LPSModel {
   const nStates = tt.n_states()
-  const layerValues = new Map<number, Map<number, number>>()
+  const layerValues = new Map<number, Map<number, ExactNumber>>()
 
-  // Single layer with uniform distribution
-  const layer1 = new Map<number, number>()
+  // Single layer with uniform distribution (as rationals 1/n)
+  const layer1 = new Map<number, ExactNumber>()
   for (let i = 0; i < nStates; i++) {
-    layer1.set(i, 1 / nStates)
+    layer1.set(i, exactFromRational(rationalFromInt(1)))  // Will be normalized below
   }
   layerValues.set(1, layer1)
+
+  // For stub, use simple float computation since uniform dist is easy
+  const conditionalProbabilityExact = (phi: Proposition, psi: Proposition): ExactNumber => {
+    // If psi is empty (⊥), it's abnormal -> return 1
+    if (psi.size === 0) return EXACT_ONE
+
+    // For uniform distribution: P(phi | psi) = |phi ∩ psi| / |psi|
+    const intersection = conjoin(phi, psi)
+    const psiSize = psi.size
+    const intersectionSize = intersection.size
+
+    if (psiSize === 0) return EXACT_ONE  // Abnormal
+
+    // Return as exact rational
+    return exactFromRational({
+      numer: BigInt(intersectionSize),
+      denom: BigInt(psiSize)
+    })
+  }
 
   return {
     numLayers: 1,
     layerAssignment: new Map(),
     layerValues,
+    conditionalProbabilityExact,
     conditionalProbability: (phi: Proposition, psi: Proposition) => {
-      // If psi is empty (⊥), it's abnormal -> return 1
-      if (psi.size === 0) return 1
-
-      // Compute P(phi | psi) = μ(phi ∩ psi) / μ(psi)
-      const intersection = conjoin(phi, psi)
-      const layer1Vals = layerValues.get(1)!
-
-      let psiMass = 0
-      for (const state of psi) {
-        psiMass += layer1Vals.get(state) ?? 0
-      }
-
-      if (psiMass === 0) return 1  // Abnormal
-
-      let intersectionMass = 0
-      for (const state of intersection) {
-        intersectionMass += layer1Vals.get(state) ?? 0
-      }
-
-      return intersectionMass / psiMass
+      return exactToFloat(conditionalProbabilityExact(phi, psi))
     }
   }
 }
@@ -547,8 +570,9 @@ export function generateSMTLIBForAssignment(
     lines.push(`(assert ${smtlib})`)
   }
 
-  lines.push('(check-sat)')
-  lines.push('(get-model)')
+  // Note: We don't include (check-sat) and (get-model) here because
+  // WrappedSolver.solve() calls solver.check() and solver.model() directly.
+  // Including them could cause issues with Z3's state.
 
   return lines.join('\n')
 }
@@ -590,68 +614,110 @@ export function parseLayerValuesFromAssignments(
 
 /**
  * Build an LPSModel from Z3 solver result.
+ * Uses exact arithmetic for conditional probability computation.
+ * Stays rational when all inputs are rational, falls back to float for irrationals.
  */
 export function buildLPSModelFromResult(
   _tt: TruthTable,  // Reserved for future use
   assignment: LayerAssignment,
-  layerValues: Map<number, Map<number, number>>,
+  layerValues: Map<number, Map<number, ExactNumber>>,
   numLayers: number
 ): LPSModel {
+  // The main function that computes P(φ|ψ) as an exact number
+  const conditionalProbabilityExact = (phi: Proposition, psi: Proposition): ExactNumber => {
+    const phiArr = Array.from(phi).sort().join(',')
+    const psiArr = Array.from(psi).sort().join(',')
+
+    // Debug: log every call
+    console.log(`LPSModel.conditionalProbabilityExact(phi={${phiArr}}, psi={${psiArr}})`)
+
+    // If psi is empty (⊥), it's abnormal -> return 1
+    if (psi.size === 0) {
+      console.log(`  -> returning 1 (psi is empty)`)
+      return EXACT_ONE
+    }
+
+    // Find the layer for psi
+    const psiKey = propositionKey(psi)
+    const layer = assignment.get(psiKey)
+    console.log(`  psiKey=${psiKey}, layer from assignment=${layer}`)
+
+    // If psi is abnormal (layer 0 or not found with zero mass), return 1
+    if (layer === 0) {
+      console.log(`  -> returning 1 (layer === 0)`)
+      return EXACT_ONE
+    }
+
+    // Find first layer where psi has positive mass
+    let psiLayer = layer
+    if (psiLayer === undefined) {
+      console.log(`  psiLayer undefined, searching layer values...`)
+      // Not in assignment, compute from layer values
+      for (let k = 1; k <= numLayers; k++) {
+        const layerVals = layerValues.get(k)
+        console.log(`    layer ${k}: layerVals exists=${!!layerVals}`)
+        if (layerVals) {
+          let mass: ExactNumber = EXACT_ZERO
+          for (const state of psi) {
+            const stateVal = layerVals.get(state) ?? EXACT_ZERO
+            console.log(`      state ${state}: val=${exactToString(stateVal)}`)
+            mass = exactAdd(mass, stateVal)
+          }
+          console.log(`    layer ${k} total mass=${exactToString(mass)}`)
+          if (!exactIsZero(mass)) {
+            psiLayer = k
+            break
+          }
+        }
+      }
+    }
+
+    console.log(`  final psiLayer=${psiLayer}`)
+
+    if (psiLayer === undefined) {
+      console.log(`  -> returning 1 (psiLayer undefined after search)`)
+      return EXACT_ONE  // Abnormal
+    }
+
+    // Compute P(phi | psi) = μ_k(phi ∩ psi) / μ_k(psi)
+    const intersection = conjoin(phi, psi)
+    const layerVals = layerValues.get(psiLayer)
+
+    if (!layerVals) {
+      console.log(`  -> returning 1 (layerVals not found for psiLayer)`)
+      return EXACT_ONE  // Shouldn't happen
+    }
+
+    let psiMass: ExactNumber = EXACT_ZERO
+    for (const state of psi) {
+      psiMass = exactAdd(psiMass, layerVals.get(state) ?? EXACT_ZERO)
+    }
+
+    if (exactIsZero(psiMass)) {
+      console.log(`  -> returning 1 (psiMass === 0)`)
+      return EXACT_ONE  // Abnormal at this layer
+    }
+
+    let intersectionMass: ExactNumber = EXACT_ZERO
+    for (const state of intersection) {
+      intersectionMass = exactAdd(intersectionMass, layerVals.get(state) ?? EXACT_ZERO)
+    }
+
+    const result = exactDiv(intersectionMass, psiMass)
+    console.log(`  intersection={${Array.from(intersection).join(',')}}, psiMass=${exactToString(psiMass)}, intersectionMass=${exactToString(intersectionMass)}`)
+    console.log(`  -> returning ${exactToString(result)}`)
+
+    return result
+  }
+
   return {
     numLayers,
     layerAssignment: assignment,
     layerValues,
+    conditionalProbabilityExact,
+    // For backward compatibility, convert to float
     conditionalProbability: (phi: Proposition, psi: Proposition) => {
-      // If psi is empty (⊥), it's abnormal -> return 1
-      if (psi.size === 0) return 1
-
-      // Find the layer for psi
-      const psiKey = propositionKey(psi)
-      const layer = assignment.get(psiKey)
-
-      // If psi is abnormal (layer 0 or not found with zero mass), return 1
-      if (layer === 0) return 1
-
-      // Find first layer where psi has positive mass
-      let psiLayer = layer
-      if (psiLayer === undefined) {
-        // Not in assignment, compute from layer values
-        for (let k = 1; k <= numLayers; k++) {
-          const layerVals = layerValues.get(k)
-          if (layerVals) {
-            let mass = 0
-            for (const state of psi) {
-              mass += layerVals.get(state) ?? 0
-            }
-            if (mass > 0) {
-              psiLayer = k
-              break
-            }
-          }
-        }
-      }
-
-      if (psiLayer === undefined) return 1  // Abnormal
-
-      // Compute P(phi | psi) = μ_k(phi ∩ psi) / μ_k(psi)
-      const intersection = conjoin(phi, psi)
-      const layerVals = layerValues.get(psiLayer)
-
-      if (!layerVals) return 1  // Shouldn't happen
-
-      let psiMass = 0
-      for (const state of psi) {
-        psiMass += layerVals.get(state) ?? 0
-      }
-
-      if (psiMass === 0) return 1  // Abnormal at this layer
-
-      let intersectionMass = 0
-      for (const state of intersection) {
-        intersectionMass += layerVals.get(state) ?? 0
-      }
-
-      return intersectionMass / psiMass
+      return exactToFloat(conditionalProbabilityExact(phi, psi))
     }
   }
 }
@@ -707,6 +773,11 @@ export async function solveLPS(
     // Generate SMTLIB
     const smtlib = generateSMTLIBForAssignment(tt, constraints, events, assignment, maxLayers)
     console.log(`LPS Solver: Testing assignment ${testedAssignments + 1}/${validAssignments}`)
+    console.log(`LPS Solver: Assignment being tested:`)
+    for (const [key, layer] of assignment.entries()) {
+      console.log(`  ${key} -> layer ${layer}`)
+    }
+    console.log(`LPS Solver: SMTLIB (first 500 chars):\n${smtlib.substring(0, 500)}...`)
     testedAssignments++
 
     // Call Z3
@@ -714,15 +785,16 @@ export async function solveLPS(
 
     if (result.status === 'sat') {
       console.log(`LPS Solver: SAT found at assignment ${testedAssignments}`)
+      console.log(`LPS Solver: named_assignments_exact keys:`, Object.keys(result.named_assignments_exact))
 
-      // Extract layer values from the model using named_assignments
+      // Extract layer values from the model using named_assignments_exact (exact numbers)
       // Variable names are in format a_k_s where k is layer, s is state (1-indexed)
-      const layerValues = new Map<number, Map<number, number>>()
+      const layerValues = new Map<number, Map<number, ExactNumber>>()
       for (let k = 1; k <= maxLayers; k++) {
-        layerValues.set(k, new Map<number, number>())
+        layerValues.set(k, new Map<number, ExactNumber>())
       }
 
-      for (const [varName, value] of Object.entries(result.named_assignments)) {
+      for (const [varName, value] of Object.entries(result.named_assignments_exact)) {
         // Parse variable name: a_k_s (layer k, state s, both 1-indexed)
         const match = varName.match(/^a_(\d+)_(\d+)$/)
         if (match) {
@@ -731,6 +803,7 @@ export async function solveLPS(
           const layerMap = layerValues.get(layer)
           if (layerMap) {
             layerMap.set(stateIndex, value)
+            console.log(`LPS Solver: Set layer ${layer}, state ${stateIndex} = ${exactToString(value)}`)
           }
         }
       }
@@ -740,9 +813,23 @@ export async function solveLPS(
         const layerMap = layerValues.get(k)!
         for (let s = 0; s < tt.n_states(); s++) {
           if (!layerMap.has(s)) {
-            layerMap.set(s, 0)
+            layerMap.set(s, EXACT_ZERO)
           }
         }
+      }
+
+      // Log the final layer values
+      console.log(`LPS Solver: Final layer values:`)
+      for (let k = 1; k <= maxLayers; k++) {
+        const layerMap = layerValues.get(k)!
+        const entries = Array.from(layerMap.entries()).map(([s, v]) => `state${s}=${exactToString(v)}`).join(', ')
+        console.log(`  Layer ${k}: ${entries}`)
+      }
+
+      // Log the layer assignment for conditioning events
+      console.log(`LPS Solver: Layer assignment for conditioning events:`)
+      for (const [key, layer] of assignment.entries()) {
+        console.log(`  ${key} -> layer ${layer}`)
       }
 
       const model = buildLPSModelFromResult(tt, assignment, layerValues, maxLayers)

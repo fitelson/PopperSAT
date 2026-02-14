@@ -52,6 +52,7 @@ export type ModelAssignmentOutput =
   | { tag: 'literal', value: number }
   | { tag: 'negative', inner: ModelAssignmentOutput }
   | { tag: 'rational', numerator: ModelAssignmentOutput, denominator: ModelAssignmentOutput }
+  | { tag: 'surd', a: ModelAssignmentOutput, b: ModelAssignmentOutput, c: number }  // a + b√c
   | { tag: 'root-obj', index: number, a: ModelAssignmentOutput, b: ModelAssignmentOutput, c: ModelAssignmentOutput }
   | { tag: 'generic-root-obj', index: number, degree: number, coefficients: number[] }
   | { tag: 'unknown', s: S }
@@ -231,6 +232,34 @@ export const model_assignment_output_to_string = (output: ModelAssignmentOutput)
     return `-${wrap(output.inner)}`
   } else if (output.tag === 'rational') {
     return `${wrap(output.numerator)} / ${output.denominator}`
+  } else if (output.tag === 'surd') {
+    // a + b√c
+    const aStr = sub(output.a)
+    const bStr = sub(output.b)
+    const sqrtStr = `√${output.c}`
+    // Check if a is zero
+    const aIsZero = output.a.tag === 'literal' && output.a.value === 0
+    // Check if b is 1 or -1
+    const bIsOne = output.b.tag === 'literal' && output.b.value === 1
+    const bIsNegOne = output.b.tag === 'literal' && output.b.value === -1
+    const bIsNeg = output.b.tag === 'negative' || bIsNegOne
+
+    if (aIsZero) {
+      if (bIsOne) return sqrtStr
+      if (bIsNegOne) return `-${sqrtStr}`
+      return `${bStr}${sqrtStr}`
+    }
+    if (bIsOne) return `${aStr} + ${sqrtStr}`
+    if (bIsNegOne) return `${aStr} - ${sqrtStr}`
+    if (bIsNeg) {
+      // Handle negative b - show absolute value
+      if (output.b.tag === 'negative') {
+        return `${aStr} - ${wrap(output.b.inner)}${sqrtStr}`
+      }
+      // bIsNegOne already handled above
+      return `${aStr} - ${bStr}${sqrtStr}`  // will show negative sign from bStr
+    }
+    return `${aStr} + ${bStr}${sqrtStr}`
   } else if (output.tag === 'root-obj') {
     return `(root-obj ${output.index} (${wrap(output.a)} * x^2 + ${wrap(output.b)} * x + ${wrap(output.c)}))`
   } else if (output.tag === 'generic-root-obj') {
@@ -459,6 +488,9 @@ export const model_assignment_output_to_s = (output: ModelAssignmentOutput): S =
     return ['-', sub(output.inner)]
   } else if (output.tag === 'rational') {
     return ['/', sub(output.numerator), sub(output.denominator)]
+  } else if (output.tag === 'surd') {
+    // Represent as (+ a (* b (sqrt c)))
+    return ['+', sub(output.a), ['*', sub(output.b), ['sqrt', output.c.toString()]]]
   } else if (output.tag === 'root-obj') {
     return ['root-obj', ['+', ['*', sub(output.a), ['^', 'x', '2']], ['*', sub(output.b), 'x'], sub(output.c)], '2']
   } else if (output.tag === 'generic-root-obj') {
@@ -515,6 +547,653 @@ export const model_to_assigned_exprs = async <CtxKey extends string>(ctx: Contex
   }
 
   return assigned_exprs
+}
+
+// ============================================================================
+// Exact Number Support (Rational or Float fallback for irrationals)
+// ============================================================================
+
+/**
+ * A rational number represented as numerator/denominator.
+ * Always kept in reduced form with positive denominator.
+ */
+export type Rational = {
+  numer: bigint
+  denom: bigint
+}
+
+/**
+ * A quadratic surd: a + b√c where a, b are rationals and c is a non-negative integer.
+ * When c=0 or b=0, this reduces to just the rational a.
+ * The radicand c is kept in simplified form (no perfect square factors).
+ */
+export type QuadraticSurd = {
+  a: Rational      // rational part
+  b: Rational      // coefficient of √c
+  c: bigint        // radicand (non-negative, square-free)
+}
+
+/**
+ * An exact number: rational, quadratic surd, or float.
+ * When both operands are rational, arithmetic stays rational.
+ * When operands are surds with same radicand, result is a surd.
+ * Falls back to float for incompatible surds or transcendental results.
+ */
+export type ExactNumber =
+  | { tag: 'rational', value: Rational }
+  | { tag: 'surd', value: QuadraticSurd }
+  | { tag: 'float', value: number }
+
+/** Compute GCD of two bigints */
+function gcd(a: bigint, b: bigint): bigint {
+  a = a < 0n ? -a : a
+  b = b < 0n ? -b : b
+  while (b !== 0n) {
+    const t = b
+    b = a % b
+    a = t
+  }
+  return a
+}
+
+/** Create a reduced rational from numerator and denominator */
+export function rational(numer: bigint, denom: bigint): Rational {
+  if (denom === 0n) throw new Error('Rational: denominator cannot be zero')
+  // Normalize sign: denominator always positive
+  if (denom < 0n) {
+    numer = -numer
+    denom = -denom
+  }
+  // Reduce to lowest terms
+  const g = gcd(numer, denom)
+  return { numer: numer / g, denom: denom / g }
+}
+
+/** Create a rational from an integer */
+export function rationalFromInt(n: bigint | number): Rational {
+  return { numer: BigInt(n), denom: 1n }
+}
+
+/** The rational number 0 */
+export const RATIONAL_ZERO: Rational = { numer: 0n, denom: 1n }
+
+/** The rational number 1 */
+export const RATIONAL_ONE: Rational = { numer: 1n, denom: 1n }
+
+/** Add two rationals */
+export function rationalAdd(a: Rational, b: Rational): Rational {
+  return rational(a.numer * b.denom + b.numer * a.denom, a.denom * b.denom)
+}
+
+/** Multiply two rationals */
+export function rationalMul(a: Rational, b: Rational): Rational {
+  return rational(a.numer * b.numer, a.denom * b.denom)
+}
+
+/** Divide two rationals (a / b) */
+export function rationalDiv(a: Rational, b: Rational): Rational {
+  if (b.numer === 0n) throw new Error('Rational: division by zero')
+  return rational(a.numer * b.denom, a.denom * b.numer)
+}
+
+/** Check if a rational equals zero */
+export function rationalIsZero(r: Rational): boolean {
+  return r.numer === 0n
+}
+
+/** Check if two rationals are equal */
+export function rationalEquals(a: Rational, b: Rational): boolean {
+  return a.numer === b.numer && a.denom === b.denom
+}
+
+/** Convert rational to float */
+export function rationalToFloat(r: Rational): number {
+  return Number(r.numer) / Number(r.denom)
+}
+
+/** Format a rational as a string "n/d" or just "n" if d=1 */
+export function rationalToString(r: Rational): string {
+  if (r.denom === 1n) return r.numer.toString()
+  return `${r.numer}/${r.denom}`
+}
+
+// --- QuadraticSurd utilities ---
+
+/**
+ * Extract the largest perfect square factor from n.
+ * Returns [k, m] where n = k² * m and m is square-free.
+ */
+function extractSquareFactor(n: bigint): [bigint, bigint] {
+  if (n <= 1n) return [1n, n]
+
+  let k = 1n
+  let m = n
+
+  // Check small primes
+  const primes = [2n, 3n, 5n, 7n, 11n, 13n, 17n, 19n, 23n, 29n, 31n]
+  for (const p of primes) {
+    while (m % (p * p) === 0n) {
+      k *= p
+      m /= (p * p)
+    }
+  }
+
+  // For larger factors, just do trial division up to sqrt(m)
+  let i = 37n
+  while (i * i <= m) {
+    while (m % (i * i) === 0n) {
+      k *= i
+      m /= (i * i)
+    }
+    i += 2n
+  }
+
+  return [k, m]
+}
+
+/**
+ * Create a simplified quadratic surd a + b√c.
+ * Extracts perfect square factors from c and absorbs them into b.
+ * If c becomes 1 or b becomes 0, the surd collapses to rational.
+ */
+export function surd(a: Rational, b: Rational, c: bigint): QuadraticSurd {
+  if (c < 0n) throw new Error('Surd: radicand must be non-negative')
+
+  // If b = 0 or c = 0, the surd part vanishes
+  if (rationalIsZero(b) || c === 0n) {
+    return { a, b: RATIONAL_ZERO, c: 0n }
+  }
+
+  // Extract perfect square factors: c = k² * m
+  const [k, m] = extractSquareFactor(c)
+
+  // √c = √(k²m) = k√m, so b√c = (b*k)√m
+  const newB = rationalMul(b, rationalFromInt(k))
+
+  // If m = 1, √m = 1, so the surd collapses to rational
+  if (m === 1n) {
+    return { a: rationalAdd(a, newB), b: RATIONAL_ZERO, c: 0n }
+  }
+
+  return { a, b: newB, c: m }
+}
+
+/** Create a surd from just a rational (no irrational part) */
+export function surdFromRational(r: Rational): QuadraticSurd {
+  return { a: r, b: RATIONAL_ZERO, c: 0n }
+}
+
+/** Check if a surd is actually just a rational (b=0 or c=0) */
+export function surdIsRational(s: QuadraticSurd): boolean {
+  return rationalIsZero(s.b) || s.c === 0n
+}
+
+/** Convert a surd to a rational if possible, otherwise undefined */
+export function surdToRational(s: QuadraticSurd): Rational | undefined {
+  if (surdIsRational(s)) return s.a
+  return undefined
+}
+
+/** Convert a surd to float */
+export function surdToFloat(s: QuadraticSurd): number {
+  return rationalToFloat(s.a) + rationalToFloat(s.b) * Math.sqrt(Number(s.c))
+}
+
+/** Add two surds (only exact if same radicand or one is rational) */
+export function surdAdd(x: QuadraticSurd, y: QuadraticSurd): QuadraticSurd | undefined {
+  // If both are rational, just add
+  if (surdIsRational(x) && surdIsRational(y)) {
+    return surdFromRational(rationalAdd(x.a, y.a))
+  }
+
+  // If one is rational, add to the rational part
+  if (surdIsRational(x)) {
+    return surd(rationalAdd(x.a, y.a), y.b, y.c)
+  }
+  if (surdIsRational(y)) {
+    return surd(rationalAdd(x.a, y.a), x.b, x.c)
+  }
+
+  // Both have irrational parts - only works if same radicand
+  if (x.c === y.c) {
+    return surd(rationalAdd(x.a, y.a), rationalAdd(x.b, y.b), x.c)
+  }
+
+  // Different radicands - cannot combine exactly
+  return undefined
+}
+
+/** Subtract two surds */
+export function surdSub(x: QuadraticSurd, y: QuadraticSurd): QuadraticSurd | undefined {
+  const negY: QuadraticSurd = { a: { numer: -y.a.numer, denom: y.a.denom }, b: { numer: -y.b.numer, denom: y.b.denom }, c: y.c }
+  return surdAdd(x, negY)
+}
+
+/** Multiply two surds (only exact if same radicand or one is rational) */
+export function surdMul(x: QuadraticSurd, y: QuadraticSurd): QuadraticSurd | undefined {
+  // (a + b√c)(d + e√f) = ad + ae√f + bd√c + be√(cf)
+  // This only stays exact if c = f (or one is rational)
+
+  if (surdIsRational(x)) {
+    // x.a * (y.a + y.b√y.c) = x.a*y.a + x.a*y.b√y.c
+    return surd(rationalMul(x.a, y.a), rationalMul(x.a, y.b), y.c)
+  }
+  if (surdIsRational(y)) {
+    return surd(rationalMul(x.a, y.a), rationalMul(y.a, x.b), x.c)
+  }
+
+  // Both have irrational parts
+  if (x.c === y.c) {
+    // (a + b√c)(d + e√c) = (ad + bec) + (ae + bd)√c
+    const ad = rationalMul(x.a, y.a)
+    const bec = rationalMul(rationalMul(x.b, y.b), rationalFromInt(x.c))
+    const ae = rationalMul(x.a, y.b)
+    const bd = rationalMul(x.b, y.a)
+    return surd(rationalAdd(ad, bec), rationalAdd(ae, bd), x.c)
+  }
+
+  // Different radicands
+  return undefined
+}
+
+/** Divide two surds (only exact if same radicand or divisor is rational) */
+export function surdDiv(x: QuadraticSurd, y: QuadraticSurd): QuadraticSurd | undefined {
+  if (surdIsRational(y)) {
+    if (rationalIsZero(y.a)) return undefined // division by zero
+    return surd(rationalDiv(x.a, y.a), rationalDiv(x.b, y.a), x.c)
+  }
+
+  if (surdIsRational(x) && x.c === y.c) {
+    // x / (d + e√c) = x(d - e√c) / (d² - e²c)
+    // But x is rational so this simplifies
+  }
+
+  // (a + b√c) / (d + e√c) = (a + b√c)(d - e√c) / (d² - e²c)
+  // Multiply by conjugate
+  if (x.c === y.c || surdIsRational(x)) {
+    const c = surdIsRational(x) ? y.c : x.c
+    const conjugate: QuadraticSurd = { a: y.a, b: { numer: -y.b.numer, denom: y.b.denom }, c }
+
+    // Denominator: (d + e√c)(d - e√c) = d² - e²c
+    const d2 = rationalMul(y.a, y.a)
+    const e2c = rationalMul(rationalMul(y.b, y.b), rationalFromInt(c))
+    const denom = rationalAdd(d2, { numer: -e2c.numer, denom: e2c.denom })
+
+    if (rationalIsZero(denom)) return undefined // division by zero
+
+    // Numerator
+    const xSurd: QuadraticSurd = surdIsRational(x) ? { a: x.a, b: RATIONAL_ZERO, c } : x
+    const numer = surdMul(xSurd, conjugate)
+    if (!numer) return undefined
+
+    // Divide by rational denominator
+    return surd(rationalDiv(numer.a, denom), rationalDiv(numer.b, denom), c)
+  }
+
+  return undefined
+}
+
+/** Negate a surd */
+export function surdNeg(s: QuadraticSurd): QuadraticSurd {
+  return { a: { numer: -s.a.numer, denom: s.a.denom }, b: { numer: -s.b.numer, denom: s.b.denom }, c: s.c }
+}
+
+/** Format a surd for display */
+export function surdToString(s: QuadraticSurd): string {
+  if (surdIsRational(s)) {
+    return rationalToString(s.a)
+  }
+
+  const aStr = rationalToString(s.a)
+  const bIsNeg = s.b.numer < 0n
+  const absB: Rational = { numer: bIsNeg ? -s.b.numer : s.b.numer, denom: s.b.denom }
+  const bStr = rationalEquals(absB, RATIONAL_ONE) ? '' : rationalToString(absB)
+  const sqrtStr = `√${s.c}`
+
+  if (rationalIsZero(s.a)) {
+    // Just the surd part
+    if (bIsNeg) {
+      return bStr ? `-${bStr}${sqrtStr}` : `-${sqrtStr}`
+    }
+    return bStr ? `${bStr}${sqrtStr}` : sqrtStr
+  }
+
+  // Both parts
+  if (bIsNeg) {
+    return bStr ? `${aStr} - ${bStr}${sqrtStr}` : `${aStr} - ${sqrtStr}`
+  }
+  return bStr ? `${aStr} + ${bStr}${sqrtStr}` : `${aStr} + ${sqrtStr}`
+}
+
+// --- ExactNumber utilities ---
+
+/** ExactNumber constants */
+export const EXACT_ZERO: ExactNumber = { tag: 'rational', value: RATIONAL_ZERO }
+export const EXACT_ONE: ExactNumber = { tag: 'rational', value: RATIONAL_ONE }
+
+/** Create an ExactNumber from a rational */
+export function exactFromRational(r: Rational): ExactNumber {
+  return { tag: 'rational', value: r }
+}
+
+/** Create an ExactNumber from a surd */
+export function exactFromSurd(s: QuadraticSurd): ExactNumber {
+  // If it's actually rational, return as rational
+  const r = surdToRational(s)
+  if (r) return { tag: 'rational', value: r }
+  return { tag: 'surd', value: s }
+}
+
+/** Create an ExactNumber from a float (for irrationals) */
+export function exactFromFloat(f: number): ExactNumber {
+  return { tag: 'float', value: f }
+}
+
+/** Convert ExactNumber to float */
+export function exactToFloat(e: ExactNumber): number {
+  if (e.tag === 'rational') return rationalToFloat(e.value)
+  if (e.tag === 'surd') return surdToFloat(e.value)
+  return e.value
+}
+
+/** Check if ExactNumber is zero */
+export function exactIsZero(e: ExactNumber): boolean {
+  if (e.tag === 'rational') return rationalIsZero(e.value)
+  if (e.tag === 'surd') return surdIsRational(e.value) && rationalIsZero(e.value.a)
+  return e.value === 0
+}
+
+/** Check if ExactNumber is rational */
+export function exactIsRational(e: ExactNumber): e is { tag: 'rational', value: Rational } {
+  return e.tag === 'rational'
+}
+
+/** Check if ExactNumber is a surd */
+export function exactIsSurd(e: ExactNumber): e is { tag: 'surd', value: QuadraticSurd } {
+  return e.tag === 'surd'
+}
+
+/** Convert ExactNumber to surd form (rationals become surds with b=0) */
+function exactToSurd(e: ExactNumber): QuadraticSurd | undefined {
+  if (e.tag === 'rational') return surdFromRational(e.value)
+  if (e.tag === 'surd') return e.value
+  return undefined // float cannot be converted to surd
+}
+
+/** Add two ExactNumbers - stays exact if possible */
+export function exactAdd(a: ExactNumber, b: ExactNumber): ExactNumber {
+  // Try to stay in surd form if possible
+  const aS = exactToSurd(a)
+  const bS = exactToSurd(b)
+  if (aS && bS) {
+    const result = surdAdd(aS, bS)
+    if (result) return exactFromSurd(result)
+  }
+  // Fall back to float
+  return { tag: 'float', value: exactToFloat(a) + exactToFloat(b) }
+}
+
+/** Divide two ExactNumbers - stays exact if possible */
+export function exactDiv(a: ExactNumber, b: ExactNumber): ExactNumber {
+  if (exactIsZero(b)) throw new Error('ExactNumber: division by zero')
+  // Try to stay in surd form
+  const aS = exactToSurd(a)
+  const bS = exactToSurd(b)
+  if (aS && bS) {
+    const result = surdDiv(aS, bS)
+    if (result) return exactFromSurd(result)
+  }
+  // Fall back to float
+  return { tag: 'float', value: exactToFloat(a) / exactToFloat(b) }
+}
+
+/** Subtract two ExactNumbers - stays exact if possible */
+export function exactSub(a: ExactNumber, b: ExactNumber): ExactNumber {
+  const aS = exactToSurd(a)
+  const bS = exactToSurd(b)
+  if (aS && bS) {
+    const result = surdSub(aS, bS)
+    if (result) return exactFromSurd(result)
+  }
+  return { tag: 'float', value: exactToFloat(a) - exactToFloat(b) }
+}
+
+/** Multiply two ExactNumbers - stays exact if possible */
+export function exactMul(a: ExactNumber, b: ExactNumber): ExactNumber {
+  const aS = exactToSurd(a)
+  const bS = exactToSurd(b)
+  if (aS && bS) {
+    const result = surdMul(aS, bS)
+    if (result) return exactFromSurd(result)
+  }
+  return { tag: 'float', value: exactToFloat(a) * exactToFloat(b) }
+}
+
+/** Negate an ExactNumber */
+export function exactNeg(a: ExactNumber): ExactNumber {
+  if (a.tag === 'rational') {
+    return { tag: 'rational', value: { numer: -a.value.numer, denom: a.value.denom } }
+  }
+  if (a.tag === 'surd') {
+    return { tag: 'surd', value: surdNeg(a.value) }
+  }
+  return { tag: 'float', value: -a.value }
+}
+
+/** Power - falls back to float since rational^rational is often irrational */
+export function exactPow(base: ExactNumber, exp: ExactNumber): ExactNumber {
+  // For now, always use float for power operations (could handle integer exponents specially)
+  return { tag: 'float', value: Math.pow(exactToFloat(base), exactToFloat(exp)) }
+}
+
+/** Format ExactNumber for display - fraction if rational, surd if algebraic, decimal if float */
+export function exactToString(e: ExactNumber): string {
+  if (e.tag === 'rational') {
+    return rationalToString(e.value)
+  }
+  if (e.tag === 'surd') {
+    return surdToString(e.value)
+  }
+  // For floats, show reasonable precision
+  const v = e.value
+  if (Number.isInteger(v)) return v.toString()
+  // Show up to 4 decimal places, trimming trailing zeros
+  return v.toFixed(4).replace(/\.?0+$/, '')
+}
+
+/**
+ * Try to parse a Z3 root-obj expression as an exact surd.
+ * Z3's root-obj format for quadratics: (root-obj (+ (* a (^ x 2)) (* b x) c) index)
+ * Represents roots of ax² + bx + c = 0.
+ * Index 1 = (-b - √Δ)/(2a), Index 2 = (-b + √Δ)/(2a) where Δ = b² - 4ac.
+ * Returns undefined if not a parseable quadratic root-obj.
+ */
+function parseRootObjAsSurd(sexpr: string): ExactNumber | undefined {
+  // Parse the S-expression
+  let parsed: S
+  try {
+    parsed = parse_s(sexpr)
+  } catch {
+    return undefined
+  }
+
+  if (!Array.isArray(parsed) || parsed[0] !== 'root-obj') {
+    return undefined
+  }
+
+  // Extract the polynomial and index
+  const poly = parsed[1]
+  const indexS = parsed[2]
+  if (!Array.isArray(poly) || poly[0] !== '+') {
+    return undefined
+  }
+
+  const index = typeof indexS === 'string' ? parseInt(indexS) : typeof indexS === 'number' ? indexS : NaN
+  if (isNaN(index) || (index !== 1 && index !== 2)) {
+    return undefined // Only handle roots 1 and 2 (quadratic)
+  }
+
+  // Try to extract coefficients a, b, c from ax² + bx + c
+  // The format is (+ (* a (^ x 2)) (* b x) c) or variations
+  let a = 0, b = 0, c = 0
+
+  for (let i = 1; i < poly.length; i++) {
+    const term = poly[i]
+    if (typeof term === 'string' || typeof term === 'number') {
+      // Constant term
+      c += parseCoefficient(term)
+    } else if (Array.isArray(term)) {
+      if (term[0] === '-' && term.length === 2) {
+        // Negation like (- 1)
+        c -= parseCoefficient(term[1])
+      } else if (term[0] === '*') {
+        // Coefficient times x or x²
+        const hasX2 = JSON.stringify(term).includes('"^","x","2"') || JSON.stringify(term).includes('^","x",2')
+        const hasX = JSON.stringify(term).includes('"x"') || JSON.stringify(term).includes("'x'")
+
+        if (hasX2) {
+          a += parseCoefficient(term[1])
+        } else if (hasX) {
+          b += parseCoefficient(term[1])
+        }
+      }
+    }
+  }
+
+  // Need non-zero a for quadratic
+  if (a === 0) return undefined
+
+  // Compute discriminant Δ = b² - 4ac
+  const discriminant = b * b - 4 * a * c
+
+  // Discriminant must be non-negative for real roots
+  if (discriminant < 0) return undefined
+
+  // If discriminant is 0, root is rational: -b/(2a)
+  if (discriminant === 0) {
+    return exactFromRational(rational(BigInt(-b), BigInt(2 * a)))
+  }
+
+  // Root is (-b ± √Δ)/(2a)
+  // As a surd: -b/(2a) + (±1/(2a))√Δ
+  const negB = BigInt(-b)
+  const twoA = BigInt(2 * a)
+
+  // Simplify the surd √Δ to extract perfect square factors
+  const [sqFactor, sqFreeDisc] = extractSquareFactor(BigInt(discriminant))
+
+  // The coefficient of √(sqFreeDisc) is ±sqFactor/(2a)
+  const sign = index === 2 ? 1n : -1n
+  const surdCoef = rational(sign * sqFactor, twoA)
+  const rationalPart = rational(negB, twoA)
+
+  return exactFromSurd(surd(rationalPart, surdCoef, sqFreeDisc))
+}
+
+/** Helper to parse a coefficient from an S-expression term */
+function parseCoefficient(term: S): number {
+  if (typeof term === 'number') return term
+  if (typeof term === 'string') {
+    const n = parseFloat(term)
+    return isNaN(n) ? 0 : n
+  }
+  if (Array.isArray(term)) {
+    if (term[0] === '-' && term.length === 2) {
+      return -parseCoefficient(term[1])
+    }
+    if (term[0] === '/') {
+      return parseCoefficient(term[1]) / parseCoefficient(term[2])
+    }
+  }
+  return 0
+}
+
+/**
+ * Extract all variable values from a Z3 model as ExactNumbers.
+ * Returns rationals when Z3 gives exact rational values, surds for algebraic, floats otherwise.
+ * This handles any variable format (a_1, a_1_1, _p0, etc.)
+ */
+export const model_to_named_assignments_exact = async <CtxKey extends string>(
+  ctx: Context<CtxKey>,
+  model: Model<CtxKey>
+): Promise<Record<string, ExactNumber>> => {
+  const assignments: Record<string, ExactNumber> = {}
+
+  for (const decl of model.decls()) {
+    if (decl.arity() !== 0) {
+      continue
+    }
+    const name = decl.name().toString()
+    const expr = await ctx.simplify(model.eval(decl.call()))
+    const sexpr = expr.sexpr()
+
+    // Try to parse rational like (/ 24 31) or (/ 1.0 4.0)
+    // Z3 sometimes returns decimals like 1.0 instead of 1
+    const ratMatch = sexpr.match(/^\(\/ (-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\)$/)
+    if (ratMatch) {
+      // Parse as floats first, then convert to bigint (handles 1.0 -> 1)
+      const numer = BigInt(Math.round(parseFloat(ratMatch[1])))
+      const denom = BigInt(Math.round(parseFloat(ratMatch[2])))
+      assignments[name] = exactFromRational(rational(numer, denom))
+      continue
+    }
+
+    // Try to parse as integer
+    const intMatch = sexpr.match(/^(-?\d+)$/)
+    if (intMatch) {
+      assignments[name] = exactFromRational(rationalFromInt(BigInt(intMatch[1])))
+      continue
+    }
+
+    // Try to parse as simple decimal like 0.0 or 1.0 (Z3's integer representation)
+    const simpleFloatMatch = sexpr.match(/^(-?\d+\.\d+)$/)
+    if (simpleFloatMatch) {
+      const floatVal = parseFloat(simpleFloatMatch[1])
+      // Check if it's actually an integer (like 1.0)
+      if (Number.isInteger(floatVal)) {
+        assignments[name] = exactFromRational(rationalFromInt(BigInt(floatVal)))
+        continue
+      }
+      // Convert to rational
+      const str = floatVal.toString()
+      const decimalIndex = str.indexOf('.')
+      if (decimalIndex !== -1) {
+        const decimals = str.length - decimalIndex - 1
+        const denom = BigInt(10 ** decimals)
+        const numer = BigInt(Math.round(floatVal * Number(denom)))
+        assignments[name] = exactFromRational(rational(numer, denom))
+        continue
+      }
+    }
+
+    // Try to parse root-obj as exact surd
+    const surdResult = parseRootObjAsSurd(sexpr)
+    if (surdResult) {
+      console.log(`Z3 returned root-obj for ${name}: ${sexpr} -> ${exactToString(surdResult)}`)
+      assignments[name] = surdResult
+      continue
+    }
+
+    // For anything else, fall back to float
+    // Try to evaluate numerically using the S-expression parser
+    const floatVal = parseFloat(sexpr)
+    if (!isNaN(floatVal)) {
+      assignments[name] = exactFromFloat(floatVal)
+    } else {
+      // Use parse_and_evaluate which handles root-obj (algebraic numbers)
+      try {
+        const parsed_s = parse_s(sexpr)
+        const evaluatedVal = parse_and_evaluate(parsed_s)
+        console.log(`Z3 returned algebraic expression for ${name}: ${sexpr} -> ${evaluatedVal}`)
+        assignments[name] = exactFromFloat(evaluatedVal)
+      } catch (e) {
+        console.log(`Z3 returned non-parseable expression for ${name}: ${sexpr}, defaulting to 0`)
+        assignments[name] = exactFromFloat(0)  // Default to 0 if we can't parse
+      }
+    }
+  }
+
+  return assignments
 }
 
 /**
@@ -735,7 +1414,8 @@ export type WrappedSolverResult =
   | {
     status: 'sat'
     state_assignments: Record<number, ModelAssignmentOutput>
-    named_assignments: Record<string, number>  // All variable values keyed by name
+    named_assignments: Record<string, number>  // All variable values keyed by name (floats - for backward compat)
+    named_assignments_exact: Record<string, ExactNumber>  // All variable values as exact numbers (rational or float)
     evaluate(tt: TruthTable, c_or_re: ConstraintOrRealExpr): Promise<FancyEvaluatorOutput>
   }
   | { status: 'unsat' }
@@ -930,7 +1610,8 @@ export class WrappedSolver {
             }
             const state_assignments = await model_to_assignments(used_ctx, model)
             const named_assignments = await model_to_named_assignments(used_ctx, model)
-            return { status: 'sat', evaluate, state_assignments, named_assignments }
+            const named_assignments_exact = await model_to_named_assignments_exact(used_ctx, model)
+            return { status: 'sat', evaluate, state_assignments, named_assignments, named_assignments_exact }
           } else {
             return { status: result }
           }

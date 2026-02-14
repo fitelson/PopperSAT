@@ -1,6 +1,291 @@
-# PrSAT 3.0 Changelog
+# PopperSAT Changelog
 
-> **Note:** This is a local build for deployment to fitelson.org. These changes are not committed to the GitHub repository (imapersonman/PrSAT).
+> **Note:** This is a local build for deployment to fitelson.org. Do not use git commands in this project — changes are manually uploaded to the server. The original PrSAT codebase is from imapersonman/PrSAT but this fork (PopperSAT) is maintained separately.
+
+## 2026-01-30 (Session 8)
+
+### Improved: MathML Support Error Message
+
+When a user's browser doesn't support MathML, the error message is now informative and actionable.
+
+**Before:** `No mathML support :(`
+
+**After:**
+```
+PopperSAT requires MathML support to display mathematical expressions.
+
+Your browser does not appear to support MathML.
+
+Please update your browser to the latest version:
+• Chrome 109+ (released January 2023)
+• Firefox (any recent version)
+• Safari (any recent version)
+• Edge 109+ (released January 2023)
+```
+
+**Changes:**
+- `src/text_to_display.ts`: Updated error message in MathML support check
+
+## 2026-01-30 (Session 7)
+
+### Changed: Title to "PopperSAT 1.0b"
+
+Updated the title to "PopperSAT 1.0b" to indicate beta version:
+- Main header title in the app
+- HTML page title (browser tab)
+
+### Added: Beta Notice with Bug Report Link
+
+Added a fourth line to the subtitle:
+
+> This is a beta version. Please report any bugs to [Branden Fitelson](http://fitelson.org/).
+
+**Changes:**
+- `src/text_to_display.ts`: Updated header title text and added beta notice line with link
+- `index.html`: Updated page title
+
+## 2026-01-30 (Session 6)
+
+### Changed: Updated Subtitle Text
+
+Revised the explanatory subtitle below the title to three lines:
+
+> PopperSAT is a decision procedure for Popper functions.
+> It uses the same syntax as [PrSAT](http://fitelson.org/PrSAT/), except unconditional probabilities "Pr(X)" are not allowed.
+> Instead, use "Pr(X | t)", where "t" is a constant symbol representing an arbitrary tautology.
+
+**Changes:**
+- `src/text_to_display.ts`: Updated subtitle text to include introductory description
+
+## 2026-01-30 (Session 5)
+
+### Added: Subtitle Explaining Syntax Difference from PrSAT
+
+Added explanatory text below the "PopperSAT" title:
+
+> PopperSAT uses the same syntax as [PrSAT](http://fitelson.org/PrSAT/), except unconditional probabilities "Pr(X)" are not allowed.
+> Instead, use "Pr(X | t)", where "t" is a constant symbol representing an arbitrary tautology.
+
+- "PrSAT" is a hyperlink to http://fitelson.org/PrSAT/
+- Text displayed in white to match header styling
+
+**Changes:**
+- `src/text_to_display.ts`: Added subtitle div with link in the header section
+
+### Changed: Conditional Display of Table and Axiom Verification
+
+The "Show table" and "Verify axioms" buttons are now conditionally displayed based on the number of atomic sentences (n) in the problem:
+
+| Atoms | Show Table | Verify Axioms |
+|-------|------------|---------------|
+| n ≤ 2 | ✓ | ✓ |
+| n = 3 | ✓ | ✗ |
+| n ≥ 4 | ✗ | ✗ |
+
+**Rationale:**
+- **n = 3**: Table has 256×256 = 65,536 entries (manageable), but axiom verification is O(n³) over propositions — too slow
+- **n ≥ 4**: Table has 65,536×65,536 = 4+ billion entries — not useful to display
+
+Users can still query specific values via the model evaluator regardless of problem size.
+
+**Changes:**
+- `src/text_to_display.ts`: Added conditional logic using `truth_table.n_letters()` to control button visibility
+
+## 2026-01-29 (Session 4)
+
+### Changed: Table Shows Decimals, Evaluator Shows Exact Numbers
+
+**Clarification of display behavior:**
+- **Probability table**: Shows decimal approximations for all values (exact value shown in tooltip on hover)
+- **Model evaluator**: Shows exact numbers — fractions for rationals, surds like `(-3 + √17)/8` for algebraic numbers
+
+This separation keeps the table compact while giving users access to exact values when they query specific probabilities.
+
+### Fixed: Table Showing Decimals for Rational Values
+
+**Problem:** The table was converting exact rationals to floats, then trying to guess the fraction back using a limited set of denominators. Fractions like `24/31` would display as decimals.
+
+**Solution:** When the exact value is a rational, use it directly for display instead of converting to float and guessing.
+
+**Changes:**
+- `src/text_to_display.ts`: Updated `popper_model_display()` to check `exactVal.tag === 'rational'` and format directly
+
+**Result:**
+- Rationals → exact fractions (e.g., `24/31`)
+- Surds/irrationals → decimals
+- Tooltip always shows exact value
+
+### Changed: Proposition Display Symbols
+
+Updated the symbols used in proposition DNF display to match the input syntax:
+- Negation: `~` (was `¬`)
+- Conjunction: `&` (was `∧`)
+- Disjunction: `∨` (unchanged)
+
+Example: A proposition that was displayed as `A∧¬B` is now displayed as `A&~B`.
+
+**Changes:**
+- `src/popper.ts`: Updated `stateLabel()` and `propositionDNF()` to use `~` and `&`
+
+## 2026-01-29 (Session 3)
+
+### Added: Exact Rational Arithmetic for Probability Display
+
+**Problem:** The conditional probability table was showing decimal values like `0.7742` instead of fractions like `24/31`. The previous fraction detection only worked for a hardcoded list of simple denominators.
+
+**Solution:** Implemented exact rational arithmetic throughout the probability computation pipeline:
+
+1. **New `ExactNumber` type** in `z3_integration.ts`:
+   - Union type: `{tag: 'rational', value: Rational}` or `{tag: 'float', value: number}`
+   - `Rational` = `{numer: bigint, denom: bigint}` for arbitrary precision
+   - Arithmetic stays rational when both operands are rational
+   - Falls back to float only for genuinely irrational values (e.g., √2)
+
+2. **Z3 model extraction** (`model_to_named_assignments_exact`):
+   - Parses Z3's S-expression output to extract exact rationals
+   - Handles Z3's `(/ 1.0 4.0)` format (decimals like `1.0` instead of `1`)
+   - Returns `ExactNumber` for each variable
+
+3. **LPS solver** uses exact arithmetic:
+   - `layerValues` now stores `ExactNumber` instead of `number`
+   - `conditionalProbabilityExact` computes P(φ|ψ) as exact rational
+   - Division of rationals stays rational: `(a/b) / (c/d) = (a·d) / (b·c)`
+
+4. **Display** uses exact values:
+   - Table cells show fractions directly (e.g., `24/31`)
+   - Decimals only appear for truly irrational values
+
+**Changes:**
+- `src/z3_integration.ts`: Added `Rational`, `ExactNumber` types and arithmetic functions; added `model_to_named_assignments_exact()`
+- `src/lps_solver.ts`: Updated `LPSModel` to use `ExactNumber`; added `conditionalProbabilityExact`
+- `src/popper.ts`: Updated `PopperModel` type to include optional `conditionalProbabilityExact`
+- `src/text_to_display.ts`: Updated table display to use exact numbers when available
+
+**Result:**
+- Rational Z3 solutions → displayed as fractions (e.g., `1/4`, `24/31`)
+- Irrational solutions → displayed as decimals (rare in probability problems)
+- All 564 tests pass
+
+### Added: Model Evaluator Exact Numbers
+
+The model evaluator now returns exact fractions when querying probabilities.
+
+**Problem:** The model evaluator was using float arithmetic, so queries like `Pr(A | t)` would return decimal approximations even when exact rationals were available.
+
+**Solution:** Implemented exact evaluation functions that preserve rational arithmetic:
+
+1. **New functions** in `src/popper.ts`:
+   - `evaluateRealExprExact()`: Evaluates real expressions using exact rational arithmetic
+   - `evaluateWithPopperModelExact()`: Main entry point for exact evaluation of constraints/expressions
+
+2. **Updated display** in `src/text_to_display.ts`:
+   - Evaluator now calls `evaluateWithPopperModelExact()` instead of `evaluateWithPopperModel()`
+   - Results displayed as MathML fractions when rational (e.g., `24/31`)
+   - Falls back to decimal only for irrational values
+
+**Result:** Querying `Pr(A | t)` in the model evaluator now shows exact fractions like `1/4` instead of `0.25`.
+
+### Added: Exact Algebraic Numbers (Quadratic Surds)
+
+The model evaluator now displays exact algebraic numbers like `(-3 + √17)/8` instead of decimal approximations.
+
+**Problem:** When Z3 returns algebraic numbers (roots of polynomials), they were converted to floats, losing exactness.
+
+**Solution:** Implemented quadratic surd arithmetic:
+
+1. **New `QuadraticSurd` type**: Represents numbers of the form `a + b√c` where a, b are rationals and c is a square-free integer.
+
+2. **Extended `ExactNumber`**: Now a union of `'rational'`, `'surd'`, or `'float'`.
+
+3. **Surd arithmetic**: Addition, subtraction, multiplication, and division preserve exact form when operands have the same radicand.
+
+4. **Z3 parsing**: `root-obj` expressions for quadratic polynomials are converted to exact surds using the quadratic formula.
+
+5. **Display**: MathML rendering shows surds with proper square root symbols (e.g., `(-3 + √17)/8`).
+
+**Changes:**
+- `src/z3_integration.ts`: Added `QuadraticSurd` type, surd arithmetic functions, `parseRootObjAsSurd()`, extended `ExactNumber` and `ModelAssignmentOutput`
+- `src/text_to_display.ts`: Updated evaluator to handle surds, added MathML rendering for surd display
+
+**Result:**
+- Quadratic algebraic solutions → displayed exactly (e.g., `(1 + √5)/4`)
+- Higher-degree or incompatible surds → fall back to float
+- Table display unchanged (still uses decimals for irrationals)
+
+### Fixed: Algebraic Numbers (root-obj) Not Displaying
+
+**Problem:** When Z3 returns algebraic numbers like `(root-obj (+ (* 8 (^ x 2)) (* 6 x) (- 1)) 2)` (quadratic roots), the model would fail to display because these weren't being converted to floats.
+
+**Solution:** Use the existing `parse_and_evaluate` function which handles `root-obj` expressions by computing the actual root value using the quadratic formula.
+
+**Changes:**
+- `src/z3_integration.ts`: Updated fallback in `model_to_named_assignments_exact` to use `parse_and_evaluate` for algebraic expressions
+
+## 2026-01-29 (Session 2)
+
+### Fixed: Conditional Probability Table Showing All 1's
+
+**Problem:** The conditional probability table was displaying all 1's instead of the actual computed probabilities from the LPS model.
+
+**Root Cause:** In `text_to_display.ts`, the display code was creating a NEW `PopperModel` using `state.solver_output.solver_output.state_assignments`, which was an empty object `{}` (set intentionally for LPS models). This caused all `psiMass` calculations to return 0, making the `conditionalProbability` function return 1 for everything.
+
+**Fix:** Changed line 1709 to use `state.solver_output.popperModel!` — the actual PopperModel built from the LPS solver with correct layer values.
+
+### Added: Popper Axiom Verification
+
+New feature to verify that a model satisfies Popper's axioms:
+
+- **Axiom 0** (Non-triviality): Some P[E|F] ≠ P[G|H]
+- **Axiom 1** (Reflexivity): P[A|A] ≥ P[B|B] for all A,B
+- **Axiom 2** (Conjunction commutativity): P[A|(B·C)] ≥ P[A|(C·B)]
+- **Axiom 3** (Monotonicity): P[A|C] ≥ P[(A·B)|C]
+- **Axiom 4** (Additivity/Abnormality): P[A|B] + P[¬A|B] = P[B|B] OR P[D|B] = P[B|B] for all D
+- **Axiom 5** (Multiplication): P[(A·B)|C] = P[A|(B·C)] × P[B|C]
+
+**UI:** Checkbox "Verify Popper's axioms" below the table toggle. Shows pass/fail for each axiom with counterexamples when applicable.
+
+**Note:** Verification is O(n³) for some axioms — can be slow for 3+ atomic sentences (256+ propositions).
+
+**Changes:**
+- `src/popper.ts`: Added `verifyPopperAxioms()`, `complement()`, `formatProb()`, `AxiomCheckResult` type
+- `src/text_to_display.ts`: Added `axiomResultsDisplay()` and UI checkbox/container
+
+### Changed: Evaluator Now Displays Fractions
+
+Model evaluator output now shows fractions (e.g., 3/4) instead of decimals (0.75).
+
+- Uses proper MathML `<mfrac>` elements for clean rendering
+- Fraction detection supports denominators: 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 16, 18, 20, 24, 25
+- Fractions are automatically reduced (e.g., 2/4 → 1/2)
+- Falls back to decimal for non-simple fractions
+
+**Changes:**
+- `src/text_to_display.ts`: Added `tryDecimalToFraction()`, `numberToMathML()`, updated `model_assignment_display()`
+- `src/popper.ts`: Added `formatProb()` for axiom verification messages
+
+### Removed: Flash of Old PrSAT Table
+
+Previously, a PrSAT-style truth table would briefly flash when clicking "Find Model" before the Popper table appeared.
+
+**Fix:** Removed the `truth_table_display()` call from `start_search_solver()`. The function was also removed as it's no longer used.
+
+**Changes:**
+- `src/text_to_display.ts`: Removed `truth_table_display()` function and its call during search
+
+### Verified: Law of Total Probability for Abnormal Events
+
+Confirmed that the solver correctly handles the law of total probability:
+
+```
+P(A | B) = P(A | B∧C) × P(C | B) + P(A | B∧¬C) × P(¬C | B)
+```
+
+This law holds for **normal** B but NOT for **abnormal** B. When B is abnormal:
+- P(X | B) = 1 for ALL X (including both C and ¬C)
+- So P(C | B) + P(¬C | B) = 1 + 1 = 2
+- The "sum" side equals 2, not 1
+
+This is correct Popper semantics! Axiom 4's additivity clause only applies to normal conditioning events. To test the law for normal B, add constraint `Pr(f | B) = 0` to force B to be normal.
 
 ## 2026-01-29
 

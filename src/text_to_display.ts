@@ -3,13 +3,13 @@ import { el, math_el, tel } from "./el";
 import { assert, assert_exists, fallthrough, sleep } from "./utils";
 import { parse_constraint, parse_constraint_or_real_expr } from "./parser";
 import { letter_string, TruthTable, variables_in_constraints, LetterSet, free_variables_in_constraint_or_real_expr, free_real_variables_in_constraint_or_real_expr } from "./pr_sat";
-import { FancyEvaluatorOutput, init_z3, ModelAssignmentOutput, PrSATResult, WrappedSolver, WrappedSolverResult } from "./z3_integration";
+import { FancyEvaluatorOutput, init_z3, ModelAssignmentOutput, PrSATResult, WrappedSolver, WrappedSolverResult, exactToString, exactToFloat } from "./z3_integration";
 import { s_to_string } from "./s";
 import { ConstraintOrRealExpr, PrSat } from "./types";
 import { InputBlockLogic } from "./display_logic";
-import { constraint_to_html, real_expr_to_html, state_id } from "./prsat_to_html";
+import { constraint_to_html, real_expr_to_html } from "./prsat_to_html";
 import { generic_input_block, split_input, SplitInput } from "./block_playground";
-import { generateAllPropositions, propositionLabel, propositionDNF, computeConditionalProbabilityTable, PopperModel, evaluateWithPopperModel } from "./popper";
+import { generateAllPropositions, propositionLabel, propositionDNF, computeConditionalProbabilityTable, PopperModel, evaluateWithPopperModelExact, verifyPopperAxioms, AxiomCheckResult } from "./popper";
 import { solveLPS, lpsModelToPopperModel, LPSSolverResult } from "./lps_solver";
 
 import * as TestId from '../tests/test_ids'
@@ -662,13 +662,52 @@ const model_assignment_display = (ma: ModelAssignmentOutput): Node => {
   }
   const sub = (ma: ModelAssignmentOutput): Node => {
     if (ma.tag === 'literal') {
-      return math_el('mi', {}, ma.value.toString())
+      return numberToMathML(ma.value)
     } else if (ma.tag === 'negative') {
       return math_el('mrow', {}, math_el('mo', {}, '-'), sub(ma.inner))
     } else if (ma.tag === 'rational') {
       return math_el('mfrac', {}, sub(ma.numerator), sub(ma.denominator))
     } else if (ma.tag === 'root-obj') {
       return quad_root_to_display(ma.a, ma.b, ma.c, ma.index)
+    } else if (ma.tag === 'surd') {
+      // Display a + b√c
+      const sqrtC = math_el('msqrt', {}, math_el('mn', {}, ma.c.toString()))
+
+      // Check if a is zero
+      const aIsZero = ma.a.tag === 'literal' && ma.a.value === 0
+      // Check if b is 1, -1, or other
+      const bIsOne = ma.b.tag === 'literal' && ma.b.value === 1
+      const bIsNegOne = ma.b.tag === 'literal' && ma.b.value === -1
+      const bIsNeg = ma.b.tag === 'negative' || bIsNegOne ||
+        (ma.b.tag === 'literal' && ma.b.value < 0) ||
+        (ma.b.tag === 'rational' && ma.b.numerator.tag === 'literal' && ma.b.numerator.value < 0)
+
+      // Get the absolute value of b for display
+      const absB = bIsNegOne ? { tag: 'literal' as const, value: 1 }
+        : (ma.b.tag === 'literal' && ma.b.value < 0) ? { tag: 'literal' as const, value: -ma.b.value }
+        : (ma.b.tag === 'negative') ? ma.b.inner
+        : ma.b
+
+      if (aIsZero) {
+        // Just b√c
+        if (bIsOne) return sqrtC
+        if (bIsNegOne) return math_el('mrow', {}, math_el('mo', {}, '-'), sqrtC)
+        if (bIsNeg) return math_el('mrow', {}, math_el('mo', {}, '-'), sub(absB), sqrtC)
+        return math_el('mrow', {}, sub(ma.b), sqrtC)
+      }
+
+      // a + b√c or a - |b|√c
+      const aNode = sub(ma.a)
+      if (bIsOne) {
+        return math_el('mrow', {}, aNode, math_el('mo', {}, '+'), sqrtC)
+      }
+      if (bIsNegOne) {
+        return math_el('mrow', {}, aNode, math_el('mo', {}, '-'), sqrtC)
+      }
+      if (bIsNeg) {
+        return math_el('mrow', {}, aNode, math_el('mo', {}, '-'), sub(absB), sqrtC)
+      }
+      return math_el('mrow', {}, aNode, math_el('mo', {}, '+'), sub(ma.b), sqrtC)
     } else if (ma.tag === 'unknown') {
       return math_el('mtext', {}, s_to_string(ma.s))
       // return math_el('mtext', {}, 'something!')
@@ -689,39 +728,6 @@ const model_assignment_display = (ma: ModelAssignmentOutput): Node => {
   }
 
   return math_el('math', {}, sub(ma))
-}
-
-// Should be the same as the model display, just without the final column.
-const truth_table_display = (tt: TruthTable): HTMLElement => {
-  // One column per sentence-letter
-  // Header has the form "A1 | A2 | ... | An | a_i | Assignment"
-
-  // const model_assignments = await model_to_assignments(ctx, z3_model)
-  const body = el('tbody', {})
-  const head_row = el('tr', {})
-  const head = el('thead', {}, head_row)
-  const letters = Array.from(tt.letters())
-  letters.forEach((l, idx) => {
-    const isLast = idx === letters.length - 1
-    head_row.appendChild(el('th', isLast ? { class: 'dv' } : {}, letter_string(l)))
-  })
-  head_row.appendChild(el('th', {}, state_id('i')))
-
-  for (const state_index of tt.state_indices()) {  // rows
-    const row = el('tr', {})
-    letters.forEach((l, idx) => {
-      const isLast = idx === letters.length - 1
-      const letter_value = tt.letter_value_from_index(l, state_index)
-      const value_string = letter_value ? '⊤' : '⊥'
-      row.appendChild(el('td', isLast ? { class: 'dv' } : {}, value_string))
-    })
-    row.appendChild(tel(TestId.state_row.state(state_index), 'td', {}, state_id(state_index)))
-    body.appendChild(row)
-  }
-  const e = el('table', {},
-    head,
-    body)
-  return e
 }
 
 // Old PrSAT model display - replaced by popper_model_display for PopperSAT
@@ -759,6 +765,55 @@ const truth_table_display = (tt: TruthTable): HTMLElement => {
 //     body)
 //   return e
 // }
+
+/**
+ * Display the results of Popper axiom verification.
+ */
+const axiomResultsDisplay = (results: AxiomCheckResult[]): HTMLElement => {
+  const container = el('div', {
+    style: 'margin-top: 0.5em; padding: 0.5em; border: 1px solid #ccc; border-radius: 4px; background: #fafafa;'
+  })
+
+  const title = el('div', { style: 'font-weight: bold; margin-bottom: 0.5em;' }, 'Popper Axiom Verification:')
+  container.appendChild(title)
+
+  const allSatisfied = results.every(r => r.satisfied)
+
+  if (allSatisfied) {
+    const summary = el('div', { style: 'color: green; margin-bottom: 0.5em;' }, '✓ All axioms satisfied!')
+    container.appendChild(summary)
+  } else {
+    const failedCount = results.filter(r => !r.satisfied).length
+    const summary = el('div', { style: 'color: red; margin-bottom: 0.5em;' }, `✗ ${failedCount} axiom(s) failed`)
+    container.appendChild(summary)
+  }
+
+  const list = el('div', { style: 'font-size: 0.9em;' })
+
+  for (const result of results) {
+    const item = el('div', {
+      style: `padding: 0.3em 0; border-bottom: 1px solid #eee; ${result.satisfied ? '' : 'background: #fee;'}`
+    })
+
+    const status = result.satisfied ? '✓' : '✗'
+    const statusColor = result.satisfied ? 'green' : 'red'
+
+    const header = el('div', {},
+      el('span', { style: `color: ${statusColor}; font-weight: bold;` }, `${status} `),
+      el('span', { style: 'font-weight: bold;' }, `Axiom ${result.axiom}: `),
+      el('span', {}, result.name)
+    )
+    item.appendChild(header)
+
+    const details = el('div', { style: 'margin-left: 1.5em; color: #666; font-size: 0.9em;' }, result.message)
+    item.appendChild(details)
+
+    list.appendChild(item)
+  }
+
+  container.appendChild(list)
+  return container
+}
 
 /**
  * Display the conditional probability table for a Popper model.
@@ -828,31 +883,55 @@ const popper_model_display = (tt: TruthTable, model: PopperModel, showDNFLegend:
 
     // Cell values
     for (let j = 0; j < nProps; j++) {
-      const value = table[i][j]
       const isColAbnormal = model.isAbnormal(propositions[j])
 
-      // Format the value
+      // Get the value - prefer exact number if available
       let displayValue: string
-      if (value === 0) {
-        displayValue = '0'
-      } else if (value === 1) {
-        displayValue = '1'
+      let floatValue: number
+      let tooltipValue: string
+
+      if (model.conditionalProbabilityExact) {
+        // Use exact arithmetic for computation
+        const exactVal = model.conditionalProbabilityExact(propositions[j], propositions[i])
+        if (exactVal) {
+          floatValue = exactToFloat(exactVal)
+          tooltipValue = exactToString(exactVal)  // Show exact value in tooltip
+          // For display: use exact fraction if rational, otherwise decimal
+          if (exactVal.tag === 'rational') {
+            const r = exactVal.value
+            if (r.denom === 1n) {
+              displayValue = r.numer.toString()
+            } else {
+              displayValue = `${r.numer}/${r.denom}`
+            }
+          } else {
+            // Surd or float - show as decimal in table
+            displayValue = formatProbability(floatValue)
+          }
+        } else {
+          // Fallback to float table
+          floatValue = table[i][j]
+          displayValue = formatProbability(floatValue)
+          tooltipValue = floatValue.toString()
+        }
       } else {
-        // Show as fraction or decimal
-        displayValue = formatProbability(value)
+        // No exact arithmetic available, use float table
+        floatValue = table[i][j]
+        displayValue = formatProbability(floatValue)
+        tooltipValue = floatValue.toString()
       }
 
       // Style based on value
       let bgColor = '#fff'
-      if (value === 1) {
+      if (floatValue === 1) {
         bgColor = isRowAbnormal ? '#e8e8e8' : '#e8f5e9' // Gray for abnormal, green-ish for normal
-      } else if (value === 0) {
+      } else if (floatValue === 0) {
         bgColor = '#ffebee' // Red-ish for zero
       }
 
       row.appendChild(el('td', {
         style: `border: 1px solid #ccc; padding: 2px 4px; text-align: center; background: ${bgColor}; ${isRowAbnormal || isColAbnormal ? 'color: #666;' : ''}`,
-        title: `P(${labels[j]} | ${rowLabel}) = ${value}`
+        title: `P(${labels[j]} | ${rowLabel}) = ${tooltipValue}`
       }, displayValue))
     }
 
@@ -901,15 +980,37 @@ const popper_model_display = (tt: TruthTable, model: PopperModel, showDNFLegend:
  * Format a probability value for display.
  * Tries to show as a simple fraction if possible, otherwise as decimal.
  */
-function formatProbability(value: number): string {
-  // Check for common simple fractions
+/**
+ * Try to convert a decimal to a fraction { numer, denom } if it matches a simple fraction.
+ * Returns null if no simple fraction matches.
+ */
+function tryDecimalToFraction(value: number): { numer: number, denom: number } | null {
   const tolerance = 1e-9
-  for (const denom of [2, 3, 4, 5, 6, 8, 10]) {
+
+  // Check 0 and 1 first
+  if (Math.abs(value) < tolerance) return { numer: 0, denom: 1 }
+  if (Math.abs(value - 1) < tolerance) return { numer: 1, denom: 1 }
+
+  // Check common denominators
+  for (const denom of [2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 16, 18, 20, 24, 25]) {
     for (let numer = 1; numer < denom; numer++) {
       if (Math.abs(value - numer / denom) < tolerance) {
-        return `${numer}/${denom}`
+        // Reduce the fraction
+        const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b)
+        const g = gcd(numer, denom)
+        return { numer: numer / g, denom: denom / g }
       }
     }
+  }
+
+  return null
+}
+
+function formatProbability(value: number): string {
+  const frac = tryDecimalToFraction(value)
+  if (frac) {
+    if (frac.denom === 1) return frac.numer.toString()
+    return `${frac.numer}/${frac.denom}`
   }
 
   // Otherwise show as decimal
@@ -917,6 +1018,28 @@ function formatProbability(value: number): string {
     return value.toString()
   }
   return value.toFixed(4).replace(/\.?0+$/, '')
+}
+
+/**
+ * Convert a number to MathML, using fractions when possible.
+ */
+function numberToMathML(value: number): Node {
+  const frac = tryDecimalToFraction(value)
+  if (frac) {
+    if (frac.denom === 1) {
+      return math_el('mn', {}, frac.numer.toString())
+    }
+    return math_el('mfrac', {},
+      math_el('mn', {}, frac.numer.toString()),
+      math_el('mn', {}, frac.denom.toString())
+    )
+  }
+
+  // Otherwise show as decimal
+  if (Number.isInteger(value)) {
+    return math_el('mn', {}, value.toString())
+  }
+  return math_el('mn', {}, value.toFixed(4).replace(/\.?0+$/, ''))
 }
 
 // const simple_options_display = <const Options extends string[]>(test_id_prefix: string, options: Options, def: Options[NumericKeys<Options>]): { element: HTMLElement, options: Editable<Options[NumericKeys<Options>]> } => {
@@ -1476,10 +1599,6 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
     state2.set({ tag: 'looking', truth_table, abort_controller })
     model_container.innerHTML = ''
     try {
-      const tt_display = truth_table_display(truth_table)
-      model_container.appendChild(tt_display)
-      // const { status, all_constraints, state_values, model } = await pr_sat_with_truth_table(ctx, truth_table, constraints, is_regular)
-      // const result = await pr_sat_with_options(ctx, truth_table, constraints, { regular: is_regular, timeout_ms: timeout_ms.get() })
       // Run the LPS solver for PopperSAT
       const lpsResult = await solveLPS(solver, truth_table, constraints, 2, abort_controller.signal)
 
@@ -1502,13 +1621,48 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
           }
 
           try {
-            const result = evaluateWithPopperModel(tt, popperModel, c_or_re)
+            const result = evaluateWithPopperModelExact(tt, popperModel, c_or_re)
 
             if (typeof result === 'boolean') {
               return { tag: 'bool-result', result }
             } else {
-              // Convert number to ModelAssignmentOutput format
-              return { tag: 'result', result: { tag: 'literal', value: result } }
+              // Convert ExactNumber to ModelAssignmentOutput format
+              if (result.tag === 'rational') {
+                // Return as rational for proper fraction display
+                const r = result.value
+                if (r.denom === 1n) {
+                  return { tag: 'result', result: { tag: 'literal', value: Number(r.numer) } }
+                }
+                return {
+                  tag: 'result',
+                  result: {
+                    tag: 'rational',
+                    numerator: { tag: 'literal', value: Number(r.numer) },
+                    denominator: { tag: 'literal', value: Number(r.denom) }
+                  }
+                }
+              } else if (result.tag === 'surd') {
+                // Return as surd for exact algebraic display
+                const s = result.value
+                // Convert rational parts to ModelAssignmentOutput
+                const aOutput = s.a.denom === 1n
+                  ? { tag: 'literal' as const, value: Number(s.a.numer) }
+                  : { tag: 'rational' as const, numerator: { tag: 'literal' as const, value: Number(s.a.numer) }, denominator: { tag: 'literal' as const, value: Number(s.a.denom) } }
+                const bOutput = s.b.denom === 1n
+                  ? { tag: 'literal' as const, value: Number(s.b.numer) }
+                  : { tag: 'rational' as const, numerator: { tag: 'literal' as const, value: Number(s.b.numer) }, denominator: { tag: 'literal' as const, value: Number(s.b.denom) } }
+                return {
+                  tag: 'result',
+                  result: {
+                    tag: 'surd',
+                    a: aOutput,
+                    b: bOutput,
+                    c: Number(s.c)
+                  }
+                }
+              } else {
+                return { tag: 'result', result: { tag: 'literal', value: result.value } }
+              }
             }
           } catch (e) {
             // Division by zero or other error
@@ -1526,7 +1680,8 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
             status: 'sat',
             evaluate,
             state_assignments: {},  // LPS model uses layer values instead
-            named_assignments: {}   // LPS model uses layer values instead
+            named_assignments: {},  // LPS model uses layer values instead
+            named_assignments_exact: {}  // LPS model uses layer values instead
           },
           popperModel,
           lpsResult
@@ -1705,38 +1860,8 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
         state_display.innerHTML = ''
         state_display.append(Constants.SAT)
 
-        // Create a Popper model from the state assignments
-        // This uses the PrSAT solution to compute conditional probabilities
-        const stateAssignments = state.solver_output.solver_output.state_assignments
-        const popperModel: PopperModel = {
-          isAbnormal: (prop) => prop.size === 0,
-          conditionalProbability: (phi, psi) => {
-            if (psi.size === 0) return 1  // Abnormal (⊥)
-
-            // Compute μ(psi) = sum of state values for states in psi
-            let psiMass = 0
-            for (const stateIdx of psi) {
-              const assignment = stateAssignments[stateIdx]
-              if (assignment?.tag === 'literal') {
-                psiMass += assignment.value
-              }
-            }
-
-            if (psiMass === 0) return 1  // Abnormal
-
-            // Compute μ(phi ∩ psi)
-            const intersection = new Set([...phi].filter(x => psi.has(x)))
-            let intersectionMass = 0
-            for (const stateIdx of intersection) {
-              const assignment = stateAssignments[stateIdx]
-              if (assignment?.tag === 'literal') {
-                intersectionMass += assignment.value
-              }
-            }
-
-            return intersectionMass / psiMass
-          }
-        }
+        // Use the Popper model from the LPS solver result
+        const popperModel = state.solver_output.popperModel!
 
         // Calculate table size info
         const nProps = Math.pow(2, state.truth_table.n_states())
@@ -1751,24 +1876,57 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
         )
         model_container.appendChild(modelInfo)
 
-        // Optional table display with toggle
-        const tableContainer = el('div', {})
-        const showTableCheckbox = el('input', { type: 'checkbox', id: 'show-popper-table' }) as HTMLInputElement
-        const showTableLabel = el('label', { for: 'show-popper-table', style: 'cursor: pointer; user-select: none;' },
-          showTableCheckbox,
-          ' Show full conditional probability table',
-          nProps > 16 ? el('span', { style: 'color: #999; font-style: italic;' }, ` (large: ${nProps}×${nProps})`) : ''
-        )
-        model_container.appendChild(showTableLabel)
-        model_container.appendChild(tableContainer)
+        // Number of atomic sentences determines which options to show:
+        // n ≤ 2: show both table and axiom verification
+        // n = 3: show only table (axiom verification too slow)
+        // n ≥ 4: show neither (table too large)
+        const nAtoms = state.truth_table.n_letters()
 
-        showTableCheckbox.onchange = () => {
-          if (showTableCheckbox.checked) {
-            const model_html = popper_model_display(state.truth_table, popperModel)
-            tableContainer.innerHTML = ''
-            tableContainer.appendChild(model_html)
-          } else {
-            tableContainer.innerHTML = ''
+        // Optional table display with toggle (only for n ≤ 3)
+        if (nAtoms <= 3) {
+          const tableContainer = el('div', {})
+          const showTableCheckbox = el('input', { type: 'checkbox', id: 'show-popper-table' }) as HTMLInputElement
+          const showTableLabel = el('label', { for: 'show-popper-table', style: 'cursor: pointer; user-select: none;' },
+            showTableCheckbox,
+            ' Show full conditional probability table',
+            nProps > 16 ? el('span', { style: 'color: #999; font-style: italic;' }, ` (large: ${nProps}×${nProps})`) : ''
+          )
+          model_container.appendChild(showTableLabel)
+          model_container.appendChild(tableContainer)
+
+          showTableCheckbox.onchange = () => {
+            if (showTableCheckbox.checked) {
+              const model_html = popper_model_display(state.truth_table, popperModel)
+              tableContainer.innerHTML = ''
+              tableContainer.appendChild(model_html)
+            } else {
+              tableContainer.innerHTML = ''
+            }
+          }
+        }
+
+        // Axiom verification section (only for n ≤ 2)
+        if (nAtoms <= 2) {
+          const axiomContainer = el('div', { style: 'margin-top: 1em;' })
+          const verifyAxiomsCheckbox = el('input', { type: 'checkbox', id: 'verify-popper-axioms' }) as HTMLInputElement
+          const verifyAxiomsLabel = el('label', { for: 'verify-popper-axioms', style: 'cursor: pointer; user-select: none;' },
+            verifyAxiomsCheckbox,
+            ' Verify Popper\'s axioms'
+          )
+          const axiomResultsContainer = el('div', {})
+          axiomContainer.appendChild(verifyAxiomsLabel)
+          axiomContainer.appendChild(axiomResultsContainer)
+          model_container.appendChild(axiomContainer)
+
+          verifyAxiomsCheckbox.onchange = () => {
+            if (verifyAxiomsCheckbox.checked) {
+              const propositions = generateAllPropositions(state.truth_table)
+              const results = verifyPopperAxioms(state.truth_table, popperModel, propositions)
+              axiomResultsContainer.innerHTML = ''
+              axiomResultsContainer.appendChild(axiomResultsDisplay(results))
+            } else {
+              axiomResultsContainer.innerHTML = ''
+            }
           }
         }
 
@@ -2003,7 +2161,20 @@ const main = (): HTMLElement => {
 
   return el('div', {},
     el('div', { class: 'header' },
-      el('div', { style: 'font-weight: bold; font-size: 1.5em;' }, 'PopperSAT'),
+      el('div', { style: 'font-weight: bold; font-size: 1.5em;' }, 'PopperSAT 1.0b'),
+      el('div', { style: 'font-size: 0.9em; margin-top: 0.3em; color: white;' },
+        'PopperSAT is a decision procedure for Popper functions.',
+        el('br', {}),
+        'It uses the same syntax as ',
+        el('a', { href: 'http://fitelson.org/PrSAT/', target: '_blank' }, 'PrSAT'),
+        ', except unconditional probabilities "Pr(X)" are not allowed.',
+        el('br', {}),
+        'Instead, use "Pr(X | t)", where "t" is a constant symbol representing an arbitrary tautology.',
+        el('br', {}),
+        'This is a beta version. Please report any bugs to ',
+        el('a', { href: 'http://fitelson.org/', target: '_blank' }, 'Branden Fitelson'),
+        '.'
+      ),
     ),
     // throw_button,
     global_error_display,
@@ -2018,8 +2189,15 @@ const main = (): HTMLElement => {
 }
 
 if (!hasMathMLSupport()) {
-  alert('No mathML support :(')
-  throw new Error('No mathML support :(')
+  const msg = 'PopperSAT requires MathML support to display mathematical expressions.\n\n' +
+    'Your browser does not appear to support MathML.\n\n' +
+    'Please update your browser to the latest version:\n' +
+    '• Chrome 109+ (released January 2023)\n' +
+    '• Firefox (any recent version)\n' +
+    '• Safari (any recent version)\n' +
+    '• Edge 109+ (released January 2023)'
+  alert(msg)
+  throw new Error('Browser does not support MathML')
 }
 
 root.appendChild(main())
