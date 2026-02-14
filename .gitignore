@@ -34,6 +34,7 @@ dist-ssr
 # Local files
 PopperSAT_problems.txt
 CLAUDE_SESSION_SUMMARY.md
+CHANGELOG.md
 
 # Playwright
 /test-results/
