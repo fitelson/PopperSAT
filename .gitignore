@@ -27,6 +27,9 @@ dist-ssr
 
 .extras
 
+# PDFs
+*.pdf
+
 # Playwright
 /test-results/
 /playwright-report/
