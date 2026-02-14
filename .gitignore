@@ -27,8 +27,9 @@ dist-ssr
 
 .extras
 
-# PDFs
+# PDFs and images
 *.pdf
+*.png
 
 # Playwright
 /test-results/
