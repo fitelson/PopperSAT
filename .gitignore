@@ -31,6 +31,9 @@ dist-ssr
 *.pdf
 *.png
 
+# Local files
+PopperSAT_problems.txt
+
 # Playwright
 /test-results/
 /playwright-report/
