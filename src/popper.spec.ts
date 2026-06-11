@@ -175,7 +175,26 @@ describe('LPS Solver', () => {
     const result = await solveLPS(solver, tt, constraints, undefined, undefined, 3_000)
 
     expect(Date.now() - started).toBeLessThan(5_000)
-    expect(['sat', 'unsat', 'unknown']).toContain(result.status)
+    expect(result.status).toBe('unsat')
+  }, 10000)
+
+  test('conditional chain-rule disequality is unsat without hanging search', async () => {
+    const D = letter('D')
+    const constraints: Constraint[] = [
+      constraint_builder.neq(
+        cpr(and(A, and(B, C)), D),
+        multiply(
+          multiply(cpr(C, and(A, and(B, D))), cpr(B, and(A, D))),
+          cpr(A, D)
+        )
+      ),
+    ]
+    const tt = new TruthTable(variables_in_constraints(constraints))
+    const started = Date.now()
+    const result = await solveLPS(solver, tt, constraints, undefined, undefined, 3_000)
+
+    expect(Date.now() - started).toBeLessThan(1_000)
+    expect(result.status).toBe('unsat')
   }, 10000)
 
   test('Bayes theorem holds', async () => {

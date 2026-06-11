@@ -438,7 +438,7 @@ const set_timeout = async (page, total_seconds) => {
   await seconds_e.fill(total_seconds.toString())
 }
 
-test('disjunctive conditional cycle returns unknown instead of freezing', async ({ page }) => {
+test('disjunctive conditional cycle returns unsat instead of freezing', async ({ page }) => {
   await to_load(page)
 
   await set_timeout(page, 3)
@@ -449,7 +449,20 @@ test('disjunctive conditional cycle returns unknown instead of freezing', async 
     'Pr(A | A \\/ C) != Pr(C | A \\/ C)',
   ])
 
-  await find_model(page, 'unknown', 10 * 1000)
+  await find_model(page, 'unsat', 10 * 1000)
+  await expect(page.getByTestId(TestId.exception_id)).not.toBeVisible()
+})
+
+test('conditional chain-rule disequality returns unsat instead of freezing', async ({ page }) => {
+  await to_load(page)
+
+  await set_timeout(page, 3)
+  const constraint_test_ids = TestId.generic_multi_input('constraints')
+  await set_block_input(page, constraint_test_ids, [
+    'Pr(A & B & C | D) != Pr(C | A & B & D) * Pr(B | A & D) * Pr(A | D)',
+  ])
+
+  await find_model(page, 'unsat', 10 * 1000)
   await expect(page.getByTestId(TestId.exception_id)).not.toBeVisible()
 })
 

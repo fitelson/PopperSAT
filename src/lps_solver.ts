@@ -257,6 +257,206 @@ export function isConsistentAssignment(
   return true
 }
 
+type SameGivenEquality = {
+  given: Proposition
+  leftNumerator: Proposition
+  rightNumerator: Proposition
+}
+
+function extractSameGivenEqualities(tt: TruthTable, constraints: Constraint[]): SameGivenEquality[] {
+  const equalities: SameGivenEquality[] = []
+
+  const processConstraint = (constraint: Constraint): void => {
+    if (constraint.tag === 'conjunction') {
+      processConstraint(constraint.left as Constraint)
+      processConstraint(constraint.right as Constraint)
+      return
+    }
+
+    if (constraint.tag !== 'equal') return
+    if (constraint.left.tag !== 'given_probability') return
+    if (constraint.right.tag !== 'given_probability') return
+
+    const leftGiven = new Set(tt.compute_dnf(constraint.left.given))
+    const rightGiven = new Set(tt.compute_dnf(constraint.right.given))
+    if (propositionKey(leftGiven) !== propositionKey(rightGiven)) return
+
+    const leftArg = new Set(tt.compute_dnf(constraint.left.arg))
+    const rightArg = new Set(tt.compute_dnf(constraint.right.arg))
+
+    equalities.push({
+      given: leftGiven,
+      leftNumerator: conjoin(leftArg, leftGiven),
+      rightNumerator: conjoin(rightArg, leftGiven),
+    })
+  }
+
+  for (const constraint of constraints) {
+    processConstraint(constraint)
+  }
+
+  return equalities
+}
+
+function isCoveredByZeroProps(prop: Proposition, zeroProps: Proposition[]): boolean {
+  for (const state of prop) {
+    if (!zeroProps.some(zeroProp => zeroProp.has(state))) {
+      return false
+    }
+  }
+  return true
+}
+
+function addZeroPropIfNew(zeroProps: Proposition[], prop: Proposition): boolean {
+  const key = propositionKey(prop)
+  if (zeroProps.some(zeroProp => propositionKey(zeroProp) === key)) {
+    return false
+  }
+  zeroProps.push(prop)
+  return true
+}
+
+/**
+ * Propagate simple zero-mass consequences before asking Z3. If an event first
+ * becomes normal at layer k, every event assigned to a later layer has zero
+ * mass at k. Equalities over the same conditioning event can then force more
+ * numerator propositions to have zero mass. If that makes a normal conditioning
+ * event itself zero at its assigned layer, the assignment is impossible.
+ */
+export function isSemanticallyConsistentAssignment(
+  constraints: Constraint[],
+  tt: TruthTable,
+  events: Proposition[],
+  assignment: LayerAssignment
+): boolean {
+  const sameGivenEqualities = extractSameGivenEqualities(tt, constraints)
+  if (sameGivenEqualities.length === 0) {
+    return true
+  }
+
+  const maxLayer = Math.max(1, ...Array.from(assignment.values()))
+
+  for (let layer = 1; layer <= maxLayer; layer++) {
+    const zeroProps: Proposition[] = [new Set<number>()]
+
+    for (const event of events) {
+      const eventLayer = assignment.get(propositionKey(event)) ?? 0
+      if (eventLayer === 0 || eventLayer > layer) {
+        addZeroPropIfNew(zeroProps, event)
+      }
+    }
+
+    let changed = true
+    while (changed) {
+      changed = false
+
+      for (const equality of sameGivenEqualities) {
+        const givenLayer = assignment.get(propositionKey(equality.given)) ?? 0
+        if (givenLayer !== layer) continue
+
+        const leftZero = isCoveredByZeroProps(equality.leftNumerator, zeroProps)
+        const rightZero = isCoveredByZeroProps(equality.rightNumerator, zeroProps)
+
+        if (leftZero && !rightZero) {
+          changed = addZeroPropIfNew(zeroProps, equality.rightNumerator) || changed
+        }
+        if (rightZero && !leftZero) {
+          changed = addZeroPropIfNew(zeroProps, equality.leftNumerator) || changed
+        }
+      }
+    }
+
+    for (const event of events) {
+      const eventLayer = assignment.get(propositionKey(event)) ?? 0
+      if (eventLayer === layer && isCoveredByZeroProps(event, zeroProps)) {
+        return false
+      }
+    }
+  }
+
+  return true
+}
+
+function propositionsEqual(left: Proposition, right: Proposition): boolean {
+  return propositionKey(left) === propositionKey(right)
+}
+
+function realExprFactors(expr: RealExpr): RealExpr[] {
+  if (expr.tag === 'multiply') {
+    return [...realExprFactors(expr.left), ...realExprFactors(expr.right)]
+  }
+  return [expr]
+}
+
+function permutations<T>(items: T[]): T[][] {
+  if (items.length <= 1) return [items]
+  const result: T[][] = []
+
+  for (let i = 0; i < items.length; i++) {
+    const rest = [...items.slice(0, i), ...items.slice(i + 1)]
+    for (const perm of permutations(rest)) {
+      result.push([items[i], ...perm])
+    }
+  }
+
+  return result
+}
+
+function isConditionalChainRuleIdentity(tt: TruthTable, left: RealExpr, right: RealExpr): boolean {
+  if (left.tag !== 'given_probability') return false
+
+  const factors = realExprFactors(right)
+  if (factors.length === 0 || factors.length > 6) return false
+  if (!factors.every(factor => factor.tag === 'given_probability')) return false
+
+  const baseGiven = new Set(tt.compute_dnf(left.given))
+  const targetArg = new Set(tt.compute_dnf(left.arg))
+  const probabilityFactors = factors as Array<RealExpr & { tag: 'given_probability' }>
+
+  for (const orderedFactors of permutations(probabilityFactors)) {
+    let expectedGiven = new Set(baseGiven)
+    let accumulatedArg: Proposition | undefined = undefined
+    let matches = true
+
+    for (const factor of orderedFactors) {
+      const factorGiven = new Set(tt.compute_dnf(factor.given))
+      if (!propositionsEqual(factorGiven, expectedGiven)) {
+        matches = false
+        break
+      }
+
+      const factorArg = new Set(tt.compute_dnf(factor.arg))
+      accumulatedArg = accumulatedArg === undefined ? factorArg : conjoin(accumulatedArg, factorArg)
+      expectedGiven = conjoin(expectedGiven, factorArg)
+    }
+
+    if (matches && accumulatedArg !== undefined && propositionsEqual(accumulatedArg, targetArg)) {
+      return true
+    }
+  }
+
+  return false
+}
+
+function constraintIsKnownUnsat(tt: TruthTable, constraint: Constraint): boolean {
+  if (constraint.tag === 'conjunction') {
+    return constraintIsKnownUnsat(tt, constraint.left as Constraint) ||
+      constraintIsKnownUnsat(tt, constraint.right as Constraint)
+  }
+
+  if (constraint.tag === 'not_equal') {
+    return isConditionalChainRuleIdentity(tt, constraint.left, constraint.right) ||
+      isConditionalChainRuleIdentity(tt, constraint.right, constraint.left)
+  }
+
+  if (constraint.tag === 'negation' && constraint.constraint.tag === 'equal') {
+    return isConditionalChainRuleIdentity(tt, constraint.constraint.left, constraint.constraint.right) ||
+      isConditionalChainRuleIdentity(tt, constraint.constraint.right, constraint.constraint.left)
+  }
+
+  return false
+}
+
 /**
  * Result of the LPS solver.
  */
@@ -869,6 +1069,10 @@ export async function solveLPS(
   abortSignal?: AbortSignal,
   timeoutMs?: number
 ): Promise<LPSSolverResult> {
+  if (constraints.some(constraint => constraintIsKnownUnsat(tt, constraint))) {
+    return { status: 'unsat' }
+  }
+
   const events = extractConditioningEvents(tt, constraints)
   console.log(`LPS Solver: Found ${events.length} conditioning events`)
   const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs
@@ -917,6 +1121,9 @@ export async function solveLPS(
       }
 
       if (!isConsistentAssignment(tt, events, assignment, forcedLayerOneEvents)) {
+        continue
+      }
+      if (!isSemanticallyConsistentAssignment(constraints, tt, events, assignment)) {
         continue
       }
       validAssignments++

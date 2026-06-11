@@ -70,7 +70,11 @@ Pr(B | B \/ C) = Pr(C | B \/ C)
 Pr(A | A \/ C) != Pr(C | A \/ C)
 ```
 
-The UI path should pass the configured timeout into `solveLPS`, yield between timed solver checks, and return `unknown` before repeated Z3 checks can exhaust WASM memory. These cases are covered by `src/popper.spec.ts` and `tests/simple.spec.js`.
+```text
+Pr(A & B & C | D) != Pr(C | A & B & D) * Pr(B | A & D) * Pr(A | D)
+```
+
+The UI path should pass the configured timeout into `solveLPS`, yield between timed solver checks, and return `unknown` before repeated Z3 checks can exhaust WASM memory. The disjunctive-cycle case should decide `UNSAT` by zero-mass propagation before the timed-search guard is needed. The conditional chain-rule disequality should decide `UNSAT` by the theorem recognizer before entering LPS assignment search. These cases are covered by `src/popper.spec.ts` and `tests/simple.spec.js`.
 
 ## Architecture
 
