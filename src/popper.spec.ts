@@ -26,7 +26,7 @@ type Constraint = PrSat['Constraint']
 
 const { eq, gt, cnot, cor, cimp, ciff } = constraint_builder
 const { cpr, lit, multiply, plus, divide, power, vbl, neg } = real_expr_builder
-const { and, not, letter, val } = sentence_builder
+const { and, or, not, letter, val } = sentence_builder
 
 // Helper: unconditional probability in Popper's system is Pr(A | ⊤)
 const pr = (s: Sentence): RealExpr => cpr(s, val(true))
@@ -146,6 +146,37 @@ describe('LPS Solver', () => {
 
     expect(result.status).toBe('sat')
   }, 30000)
+
+  test('Dorst-style conditional constraints do not hang search', async () => {
+    const [P, Q, C] = [letter('P'), letter('Q'), letter('C')]
+    const constraints: Constraint[] = [
+      eq(cpr(C, val(true)), cpr(Q, P)),
+      eq(cpr(C, not(Q)), cpr(Q, and(P, not(Q)))),
+      eq(cpr(C, or(not(P), Q)), cpr(Q, and(P, or(not(P), Q)))),
+      gt(cpr(and(P, not(Q)), val(true)), lit(0)),
+      constraint_builder.lt(cpr(and(P, sentence_builder.iff(Q, C)), val(true)), lit(1)),
+    ]
+    const tt = new TruthTable(variables_in_constraints(constraints))
+    const started = Date.now()
+    const result = await solveLPS(solver, tt, constraints, undefined, undefined, 3_000)
+
+    expect(Date.now() - started).toBeLessThan(5_000)
+    expect(['sat', 'unsat', 'unknown']).toContain(result.status)
+  }, 10000)
+
+  test('cyclic disjunctive conditional constraints do not hang search', async () => {
+    const constraints: Constraint[] = [
+      eq(cpr(A, or(A, B)), cpr(B, or(A, B))),
+      eq(cpr(B, or(B, C)), cpr(C, or(B, C))),
+      constraint_builder.neq(cpr(A, or(A, C)), cpr(C, or(A, C))),
+    ]
+    const tt = new TruthTable(variables_in_constraints(constraints))
+    const started = Date.now()
+    const result = await solveLPS(solver, tt, constraints, undefined, undefined, 3_000)
+
+    expect(Date.now() - started).toBeLessThan(5_000)
+    expect(['sat', 'unsat', 'unknown']).toContain(result.status)
+  }, 10000)
 
   test('Bayes theorem holds', async () => {
     // Pr(A|B) * Pr(B) = Pr(B|A) * Pr(A)

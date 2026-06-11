@@ -102,6 +102,75 @@ export function extractConditioningEvents(tt: TruthTable, constraints: Constrain
 }
 
 /**
+ * Some constraints force a proposition to have positive mass in the first layer.
+ * For example, Pr(A | true) > 0 entails that A is normal at layer 1. Recording
+ * that fact lets the layer enumerator skip impossible assignments before Z3 is
+ * involved.
+ */
+export function deriveForcedLayerOneEvents(tt: TruthTable, constraints: Constraint[]): Map<string, Proposition> {
+  const forced = new Map<string, Proposition>()
+  const top = new Set(Array.from({ length: tt.n_states() }, (_, i) => i))
+  const topKey = propositionKey(top)
+
+  const literalValue = (expr: RealExpr): number | undefined => {
+    if (expr.tag === 'literal') return expr.value
+    if (expr.tag === 'negative' && expr.expr.tag === 'literal') return -expr.expr.value
+    return undefined
+  }
+
+  const topConditionedArg = (expr: RealExpr): Proposition | undefined => {
+    if (expr.tag !== 'given_probability') return undefined
+    const given = new Set(tt.compute_dnf(expr.given))
+    if (propositionKey(given) !== topKey) return undefined
+    return new Set(tt.compute_dnf(expr.arg))
+  }
+
+  const force = (prop: Proposition): void => {
+    forced.set(propositionKey(prop), prop)
+  }
+
+  const processComparison = (constraint: Constraint): void => {
+    if (!(constraint.tag === 'equal' || constraint.tag === 'less_than' ||
+          constraint.tag === 'less_than_or_equal' || constraint.tag === 'greater_than' ||
+          constraint.tag === 'greater_than_or_equal')) {
+      return
+    }
+
+    const leftProp = topConditionedArg(constraint.left)
+    const rightProp = topConditionedArg(constraint.right)
+    const leftLiteral = literalValue(constraint.left)
+    const rightLiteral = literalValue(constraint.right)
+
+    if (leftProp !== undefined && rightLiteral !== undefined) {
+      if (constraint.tag === 'equal' && rightLiteral > 0) force(leftProp)
+      if (constraint.tag === 'greater_than' && rightLiteral >= 0) force(leftProp)
+      if (constraint.tag === 'greater_than_or_equal' && rightLiteral > 0) force(leftProp)
+    }
+
+    if (rightProp !== undefined && leftLiteral !== undefined) {
+      if (constraint.tag === 'equal' && leftLiteral > 0) force(rightProp)
+      if (constraint.tag === 'less_than' && leftLiteral >= 0) force(rightProp)
+      if (constraint.tag === 'less_than_or_equal' && leftLiteral > 0) force(rightProp)
+    }
+  }
+
+  const processConstraint = (constraint: Constraint): void => {
+    if (constraint.tag === 'conjunction') {
+      processConstraint(constraint.left as Constraint)
+      processConstraint(constraint.right as Constraint)
+    } else {
+      processComparison(constraint)
+    }
+  }
+
+  for (const constraint of constraints) {
+    processConstraint(constraint)
+  }
+
+  return forced
+}
+
+/**
  * Generate all possible layer assignments for the given conditioning events.
  *
  * For K layers, each event can be assigned to layers 0 (abnormal), 1, 2, ..., K.
@@ -115,6 +184,7 @@ export function* generateLayerAssignments(
 ): Generator<LayerAssignment> {
   const n = events.length
   const base = maxLayers + 1  // 0 through maxLayers inclusive
+  const layerOrder = [1, 0, ...Array.from({ length: Math.max(0, maxLayers - 1) }, (_, i) => i + 2)]
 
   // Generate all combinations
   const total = Math.pow(base, n)
@@ -124,7 +194,7 @@ export function* generateLayerAssignments(
     let value = i
 
     for (let j = 0; j < n; j++) {
-      const layer = value % base
+      const layer = layerOrder[value % base]
       value = Math.floor(value / base)
       const key = propositionKey(events[j])
       assignment.set(key, layer)
@@ -143,9 +213,16 @@ export function* generateLayerAssignments(
 export function isConsistentAssignment(
   tt: TruthTable,
   events: Proposition[],
-  assignment: LayerAssignment
+  assignment: LayerAssignment,
+  forcedLayerOneEvents: Map<string, Proposition> = new Map()
 ): boolean {
   const nStates = tt.n_states()
+
+  for (const key of forcedLayerOneEvents.keys()) {
+    if ((assignment.get(key) ?? 0) !== 1) {
+      return false
+    }
+  }
 
   for (const event of events) {
     const key = propositionKey(event)
@@ -789,10 +866,20 @@ export async function solveLPS(
   tt: TruthTable,
   constraints: Constraint[],
   maxLayers?: number,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  timeoutMs?: number
 ): Promise<LPSSolverResult> {
   const events = extractConditioningEvents(tt, constraints)
   console.log(`LPS Solver: Found ${events.length} conditioning events`)
+  const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs
+  const maxTimedSolverChecks = timeoutMs === undefined ? undefined : 50
+  const forcedLayerOneEvents = deriveForcedLayerOneEvents(tt, constraints)
+
+  for (const [key, event] of forcedLayerOneEvents.entries()) {
+    if (!events.some(e => propositionKey(e) === key)) {
+      events.push(event)
+    }
+  }
 
   // Add ⊤ (tautology) to events if not present - it must be normal at layer 1
   const allStates = new Set(Array.from({ length: tt.n_states() }, (_, i) => i))
@@ -820,13 +907,23 @@ export async function solveLPS(
       if (abortSignal?.aborted) {
         return { status: 'error', message: 'Cancelled' }
       }
+      if (deadline !== undefined && Date.now() >= deadline) {
+        return { status: 'unknown' }
+      }
 
       totalAssignments++
+      if (totalAssignments % 100 === 0) {
+        await new Promise<void>(resolve => setTimeout(resolve, 0))
+      }
 
-      if (!isConsistentAssignment(tt, events, assignment)) {
+      if (!isConsistentAssignment(tt, events, assignment, forcedLayerOneEvents)) {
         continue
       }
       validAssignments++
+      if (maxTimedSolverChecks !== undefined && testedAssignments >= maxTimedSolverChecks) {
+        console.log(`LPS Solver: timed search reached ${testedAssignments} solver checks; returning unknown`)
+        return { status: 'unknown' }
+      }
 
       // Generate SMTLIB
       let smtlib: string
@@ -835,18 +932,26 @@ export async function solveLPS(
       } catch (e: any) {
         return { status: 'error', message: e.message ?? String(e) }
       }
-      console.log(`LPS Solver: Testing assignment ${testedAssignments + 1}/${validAssignments}`)
-      console.log(`LPS Solver: Assignment being tested:`)
-      for (const [key, layer] of assignment.entries()) {
-        console.log(`  ${key} -> layer ${layer}`)
+      const shouldLogAssignment = timeoutMs === undefined || testedAssignments < 5 || testedAssignments % 25 === 0
+      if (shouldLogAssignment) {
+        console.log(`LPS Solver: Testing assignment ${testedAssignments + 1}/${validAssignments}`)
+        console.log(`LPS Solver: Assignment being tested:`)
+        for (const [key, layer] of assignment.entries()) {
+          console.log(`  ${key} -> layer ${layer}`)
+        }
+        console.log(`LPS Solver: SMTLIB (first 500 chars):\n${smtlib.substring(0, 500)}...`)
       }
-      console.log(`LPS Solver: SMTLIB (first 500 chars):\n${smtlib.substring(0, 500)}...`)
       testedAssignments++
 
       // Call Z3
       let result: WrappedSolverResult
       try {
-        result = await solver.solve(smtlib, abortSignal)
+        const remainingMs = deadline === undefined ? undefined : Math.max(1, deadline - Date.now())
+        const checkTimeoutMs = remainingMs === undefined ? undefined : Math.min(remainingMs, 1000)
+        result = await solver.solve(smtlib, abortSignal, undefined, checkTimeoutMs)
+        if (timeoutMs !== undefined) {
+          await new Promise<void>(resolve => setTimeout(resolve, 0))
+        }
       } catch (e: any) {
         return { status: 'error', message: e.message ?? String(e) }
       }
@@ -917,6 +1022,8 @@ export async function solveLPS(
       } else if (result.status === 'exception') {
         console.error(`LPS Solver: Z3 exception: ${result.message}`)
         // Continue to next assignment
+      } else if (result.status === 'unknown' && timeoutMs !== undefined) {
+        return { status: 'unknown' }
       }
       // For 'unsat' and 'unknown', continue to next assignment
     }

@@ -1564,7 +1564,7 @@ export class WrappedSolver {
   }
 
   // async solve(smtlib_lines: S[], abort_signal?: AbortSignal, cancel_fallback?: () => Promise<undefined>): Promise<WrappedSolverResult> {
-  async solve(smtlib_string: string, abort_signal?: AbortSignal, cancel_fallback?: () => Promise<undefined>): Promise<WrappedSolverResult> {
+  async solve(smtlib_string: string, abort_signal?: AbortSignal, cancel_fallback?: () => Promise<undefined>, timeout_ms?: number): Promise<WrappedSolverResult> {
     // This function is about to get more complicated -- yay!
     // On cancel, attempt interrupt.
     // If the interrupt succeeds within a certain timeout, resolve with a 'cancel' status.
@@ -1584,6 +1584,9 @@ export class WrappedSolver {
 
         const used_ctx = this.z3_interface.Context('main')
         const solver = new used_ctx.Solver('QF_NRA')
+        if (timeout_ms !== undefined) {
+          solver.set("timeout", timeout_ms)
+        }
         // const smtlib_lines_string = smtlib_lines.map((s) => s_to_string(s, false)).join('\n')
         const smtlib_lines_string = smtlib_string
 

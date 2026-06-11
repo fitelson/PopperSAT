@@ -54,6 +54,24 @@ x = 0
 
 The expected UI result is SAT with `Popper model found`, but no `Show full conditional probability table`, no `Verify Popper's axioms`, and no `Save table as image` control.
 
+5. Hard LPS inputs can freeze the browser if the solver is allowed to make unbounded repeated Z3/WASM calls on the main thread. Regression examples:
+
+```text
+Pr(C | true) = Pr(Q | P)
+Pr(C | ~Q) = Pr(Q | P & ~Q)
+Pr(C | ~P \/ Q) = Pr(Q | P & (~P \/ Q))
+Pr(P & ~Q | true) > 0
+Pr(P & (Q <> C) | true) < 1
+```
+
+```text
+Pr(A | A \/ B) = Pr(B | A \/ B)
+Pr(B | B \/ C) = Pr(C | B \/ C)
+Pr(A | A \/ C) != Pr(C | A \/ C)
+```
+
+The UI path should pass the configured timeout into `solveLPS`, yield between timed solver checks, and return `unknown` before repeated Z3 checks can exhaust WASM memory. These cases are covered by `src/popper.spec.ts` and `tests/simple.spec.js`.
+
 ## Architecture
 
 ### Core Algorithm: Lexicographic Probability Systems (LPS)

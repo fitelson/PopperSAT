@@ -1600,7 +1600,7 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
     model_container.innerHTML = ''
     try {
       // Run the LPS solver for PopperSAT
-      const lpsResult = await solveLPS(solver, truth_table, constraints, undefined, abort_controller.signal)
+      const lpsResult = await solveLPS(solver, truth_table, constraints, undefined, abort_controller.signal, timeout_ms.get())
 
       // Convert LPS result to PopperSATResult format
       let popperResult: PopperSATResult
