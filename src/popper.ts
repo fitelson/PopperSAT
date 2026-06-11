@@ -10,7 +10,7 @@ import { TruthTable, sentence_builder } from "./pr_sat"
 import { PrSat, SentenceMap } from "./types"
 import {
   ExactNumber, exactAdd, exactSub, exactMul, exactDiv, exactNeg, exactPow,
-  exactFromRational, rationalFromInt, exactIsZero, EXACT_ONE
+  exactFromRational, rationalFromInt, exactIsZero, exactToFloat, EXACT_ONE
 } from "./z3_integration"
 
 type Sentence = PrSat['Sentence']
@@ -265,6 +265,9 @@ export type PopperModel = {
    * Returns undefined if not available (e.g., stub models).
    */
   conditionalProbabilityExact?: (phi: Proposition, psi: Proposition) => ExactNumber | undefined
+
+  /** Exact assignments for declared real variables, when available. */
+  realVarValues?: Map<string, ExactNumber>
 }
 
 /**
@@ -353,6 +356,9 @@ export function evaluateRealExpr(
     case 'literal':
       return expr.value
     case 'variable':
+      if (model.realVarValues?.has(expr.id)) {
+        return exactToFloat(model.realVarValues.get(expr.id)!)
+      }
       throw new Error(`Cannot evaluate free variable '${expr.id}'`)
     case 'state_variable_sum':
       throw new Error('state_variable_sum should not appear in user expressions')
@@ -476,6 +482,9 @@ export function evaluateRealExprExact(
       return { tag: 'float', value: val }
 
     case 'variable':
+      if (model.realVarValues?.has(expr.id)) {
+        return model.realVarValues.get(expr.id)!
+      }
       throw new Error(`Cannot evaluate free variable '${expr.id}'`)
 
     case 'state_variable_sum':

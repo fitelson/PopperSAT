@@ -13,7 +13,7 @@
  * where d = μ_k(ψ), n = μ_k(φ ∧ ψ), and p is the probability value.
  */
 
-import { TruthTable } from "./pr_sat"
+import { TruthTable, variables_in_constraints } from "./pr_sat"
 import { PrSat } from "./types"
 import { Proposition, entails, conjoin, PopperModel } from "./popper"
 import { WrappedSolver, WrappedSolverResult, ExactNumber, EXACT_ZERO, EXACT_ONE, exactAdd, exactDiv, exactIsZero, exactToFloat, exactToString, exactFromRational, rationalFromInt } from "./z3_integration"
@@ -81,6 +81,9 @@ export function extractConditioningEvents(tt: TruthTable, constraints: Constrain
     if (c.tag === 'negation') {
       processConstraint(c.constraint)
     } else if (c.tag === 'conjunction' || c.tag === 'disjunction') {
+      processConstraint(c.left as Constraint)
+      processConstraint(c.right as Constraint)
+    } else if (c.tag === 'conditional' || c.tag === 'biconditional') {
       processConstraint(c.left as Constraint)
       processConstraint(c.right as Constraint)
     } else if (c.tag === 'equal' || c.tag === 'not_equal' || c.tag === 'less_than' ||
@@ -199,6 +202,9 @@ export type LPSModel = {
   /** Probability values at each layer: layerValues[k][stateIndex] = μ_k(state) as exact number */
   layerValues: Map<number, Map<number, ExactNumber>>
 
+  /** Exact assignments for declared real variables */
+  realVarValues: Map<string, ExactNumber>
+
   /** Get P(φ | ψ) as exact number (rational if possible, float for irrationals) */
   conditionalProbabilityExact: (phi: Proposition, psi: Proposition) => ExactNumber
 
@@ -261,7 +267,9 @@ export function lpsModelToPopperModel(_tt: TruthTable, lpsModel: LPSModel): Popp
     conditionalProbabilityExact: (phi: Proposition, psi: Proposition) => {
       console.log(`PopperModel.conditionalProbabilityExact wrapper called`)
       return lpsModel.conditionalProbabilityExact(phi, psi)
-    }
+    },
+
+    realVarValues: lpsModel.realVarValues
   }
 }
 
@@ -303,6 +311,7 @@ export function createStubLPSModel(tt: TruthTable): LPSModel {
     numLayers: 1,
     layerAssignment: new Map(),
     layerValues,
+    realVarValues: new Map(),
     conditionalProbabilityExact,
     conditionalProbability: (phi: Proposition, psi: Proposition) => {
       return exactToFloat(conditionalProbabilityExact(phi, psi))
@@ -354,18 +363,21 @@ export function generateNonNegativityConstraints(numLayers: number, numStates: n
 }
 
 /**
- * Generate normalization constraint: sum of state vars at each layer ≤ 1.
- * (We use ≤ 1 to allow for layers with total mass < 1)
+ * Generate normalization constraint: sum of state vars at each layer = 1.
  */
 export function generateNormalizationConstraints(numLayers: number, numStates: number): string[] {
   const lines: string[] = []
 
   for (let k = 1; k <= numLayers; k++) {
     const vars = Array.from({ length: numStates }, (_, s) => layerStateVarName(k, s))
-    lines.push(`(assert (<= (+ ${vars.join(' ')}) 1))`)
+    lines.push(`(assert (= (+ ${vars.join(' ')}) 1))`)
   }
 
   return lines
+}
+
+export function generateRealVarDeclarations(realVars: string[]): string[] {
+  return [...new Set(realVars)].sort().map((id) => `(declare-const ${id} Real)`)
 }
 
 /**
@@ -432,8 +444,22 @@ export function transformRealExprToSMTLIB(
   _events: Proposition[],  // Reserved for future use (e.g., caching)
   assignment: LayerAssignment,
   freshVarCounter: { count: number }
-): { smtlib: string, extraConstraints: string[] } {
+): { smtlib: string, extraConstraints: string[], guards: string[] } {
   const extras: string[] = []
+  const guards: string[] = []
+
+  const integerLiteral = (e: RealExpr): number | undefined => {
+    if (e.tag === 'literal' && Number.isInteger(e.value)) return e.value
+    if (e.tag === 'negative' && e.expr.tag === 'literal' && Number.isInteger(e.expr.value)) return -e.expr.value
+    return undefined
+  }
+
+  const pow = (base: string, exponent: number): string => {
+    if (exponent === 0) return '1'
+    if (exponent === 1) return base
+    const factors = Array.from({ length: exponent }, () => base)
+    return `(* ${factors.join(' ')})`
+  }
 
   function transform(e: RealExpr): string {
     if (e.tag === 'literal') {
@@ -479,9 +505,22 @@ export function transformRealExprToSMTLIB(
     } else if (e.tag === 'multiply') {
       return `(* ${transform(e.left)} ${transform(e.right)})`
     } else if (e.tag === 'divide') {
-      return `(/ ${transform(e.numerator)} ${transform(e.denominator)})`
+      const numerator = transform(e.numerator)
+      const denominator = transform(e.denominator)
+      guards.push(`(not (= ${denominator} 0))`)
+      return `(/ ${numerator} ${denominator})`
     } else if (e.tag === 'power') {
-      return `(^ ${transform(e.base)} ${transform(e.exponent)})`
+      const exponent = integerLiteral(e.exponent)
+      if (exponent === undefined) {
+        throw new Error('Only integer exponents are supported in constraints')
+      }
+      const base = transform(e.base)
+      if (exponent >= 0) {
+        return pow(base, exponent)
+      }
+      const denominator = pow(base, -exponent)
+      guards.push(`(not (= ${denominator} 0))`)
+      return `(/ 1 ${denominator})`
     } else if (e.tag === 'state_variable_sum') {
       // This shouldn't appear in user constraints, but handle it anyway
       const vars = e.indices.map(s => layerStateVarName(1, s))
@@ -492,7 +531,7 @@ export function transformRealExprToSMTLIB(
     throw new Error(`Unknown RealExpr tag: ${(e as any).tag}`)
   }
 
-  return { smtlib: transform(expr), extraConstraints: extras }
+  return { smtlib: transform(expr), extraConstraints: extras, guards }
 }
 
 /**
@@ -514,11 +553,15 @@ export function transformConstraintToSMTLIB(
       return `(and ${transform(c.left as Constraint)} ${transform(c.right as Constraint)})`
     } else if (c.tag === 'disjunction') {
       return `(or ${transform(c.left as Constraint)} ${transform(c.right as Constraint)})`
+    } else if (c.tag === 'conditional') {
+      return `(=> ${transform(c.left as Constraint)} ${transform(c.right as Constraint)})`
+    } else if (c.tag === 'biconditional') {
+      return `(= ${transform(c.left as Constraint)} ${transform(c.right as Constraint)})`
     } else if (c.tag === 'equal' || c.tag === 'not_equal' || c.tag === 'less_than' ||
                c.tag === 'less_than_or_equal' || c.tag === 'greater_than' || c.tag === 'greater_than_or_equal') {
       // Comparison constraint - left and right are RealExpr
-      const { smtlib: leftSmt, extraConstraints: leftExtras } = transformRealExprToSMTLIB(tt, c.left, events, assignment, freshVarCounter)
-      const { smtlib: rightSmt, extraConstraints: rightExtras } = transformRealExprToSMTLIB(tt, c.right, events, assignment, freshVarCounter)
+      const { smtlib: leftSmt, extraConstraints: leftExtras, guards: leftGuards } = transformRealExprToSMTLIB(tt, c.left, events, assignment, freshVarCounter)
+      const { smtlib: rightSmt, extraConstraints: rightExtras, guards: rightGuards } = transformRealExprToSMTLIB(tt, c.right, events, assignment, freshVarCounter)
       allExtras.push(...leftExtras, ...rightExtras)
 
       const opMap: Record<string, string> = {
@@ -531,7 +574,11 @@ export function transformConstraintToSMTLIB(
       }
       const op = opMap[c.tag]
 
-      return `(${op} ${leftSmt} ${rightSmt})`
+      const comparison = c.tag === 'not_equal'
+        ? `(not (= ${leftSmt} ${rightSmt}))`
+        : `(${op} ${leftSmt} ${rightSmt})`
+      const guards = [...leftGuards, ...rightGuards]
+      return guards.length === 0 ? comparison : `(and ${guards.join(' ')} ${comparison})`
     }
     throw new Error(`Unknown constraint tag: ${(c as any).tag}`)
   }
@@ -554,6 +601,7 @@ export function generateSMTLIBForAssignment(
 
   // Declarations
   lines.push(...generateLayerVarDeclarations(numLayers, numStates))
+  lines.push(...generateRealVarDeclarations(variables_in_constraints(constraints).real))
 
   // Basic constraints
   lines.push(...generateNonNegativityConstraints(numLayers, numStates))
@@ -621,7 +669,8 @@ export function buildLPSModelFromResult(
   _tt: TruthTable,  // Reserved for future use
   assignment: LayerAssignment,
   layerValues: Map<number, Map<number, ExactNumber>>,
-  numLayers: number
+  numLayers: number,
+  realVarValues: Map<string, ExactNumber> = new Map()
 ): LPSModel {
   // The main function that computes P(φ|ψ) as an exact number
   const conditionalProbabilityExact = (phi: Proposition, psi: Proposition): ExactNumber => {
@@ -714,6 +763,7 @@ export function buildLPSModelFromResult(
     numLayers,
     layerAssignment: assignment,
     layerValues,
+    realVarValues,
     conditionalProbabilityExact,
     // For backward compatibility, convert to float
     conditionalProbability: (phi: Proposition, psi: Proposition) => {
@@ -738,12 +788,11 @@ export async function solveLPS(
   solver: WrappedSolver,
   tt: TruthTable,
   constraints: Constraint[],
-  maxLayers: number = 2,
+  maxLayers?: number,
   abortSignal?: AbortSignal
 ): Promise<LPSSolverResult> {
   const events = extractConditioningEvents(tt, constraints)
   console.log(`LPS Solver: Found ${events.length} conditioning events`)
-  console.log(`LPS Solver: Max layers = ${maxLayers}`)
 
   // Add ⊤ (tautology) to events if not present - it must be normal at layer 1
   const allStates = new Set(Array.from({ length: tt.n_states() }, (_, i) => i))
@@ -752,99 +801,125 @@ export async function solveLPS(
     events.push(allStates)
   }
 
+  const maxLayerBound = maxLayers ?? Math.max(1, events.length)
+  const layerBounds = maxLayers === undefined
+    ? Array.from({ length: maxLayerBound }, (_, i) => i + 1)
+    : [maxLayerBound]
+  console.log(`LPS Solver: Max layers = ${maxLayerBound}`)
+
   // Count total assignments to try
   let totalAssignments = 0
   let validAssignments = 0
   let testedAssignments = 0
 
-  for (const assignment of generateLayerAssignments(events, maxLayers)) {
-    // Check for abort
-    if (abortSignal?.aborted) {
-      return { status: 'error', message: 'Cancelled' }
-    }
+  for (const layerBound of layerBounds) {
+    console.log(`LPS Solver: Trying ${layerBound} layer(s)`)
 
-    totalAssignments++
-
-    if (!isConsistentAssignment(tt, events, assignment)) {
-      continue
-    }
-    validAssignments++
-
-    // Generate SMTLIB
-    const smtlib = generateSMTLIBForAssignment(tt, constraints, events, assignment, maxLayers)
-    console.log(`LPS Solver: Testing assignment ${testedAssignments + 1}/${validAssignments}`)
-    console.log(`LPS Solver: Assignment being tested:`)
-    for (const [key, layer] of assignment.entries()) {
-      console.log(`  ${key} -> layer ${layer}`)
-    }
-    console.log(`LPS Solver: SMTLIB (first 500 chars):\n${smtlib.substring(0, 500)}...`)
-    testedAssignments++
-
-    // Call Z3
-    const result: WrappedSolverResult = await solver.solve(smtlib, abortSignal)
-
-    if (result.status === 'sat') {
-      console.log(`LPS Solver: SAT found at assignment ${testedAssignments}`)
-      console.log(`LPS Solver: named_assignments_exact keys:`, Object.keys(result.named_assignments_exact))
-
-      // Extract layer values from the model using named_assignments_exact (exact numbers)
-      // Variable names are in format a_k_s where k is layer, s is state (1-indexed)
-      const layerValues = new Map<number, Map<number, ExactNumber>>()
-      for (let k = 1; k <= maxLayers; k++) {
-        layerValues.set(k, new Map<number, ExactNumber>())
+    for (const assignment of generateLayerAssignments(events, layerBound)) {
+      // Check for abort
+      if (abortSignal?.aborted) {
+        return { status: 'error', message: 'Cancelled' }
       }
 
-      for (const [varName, value] of Object.entries(result.named_assignments_exact)) {
-        // Parse variable name: a_k_s (layer k, state s, both 1-indexed)
-        const match = varName.match(/^a_(\d+)_(\d+)$/)
-        if (match) {
-          const layer = parseInt(match[1])
-          const stateIndex = parseInt(match[2]) - 1  // Convert to 0-indexed
-          const layerMap = layerValues.get(layer)
-          if (layerMap) {
-            layerMap.set(stateIndex, value)
-            console.log(`LPS Solver: Set layer ${layer}, state ${stateIndex} = ${exactToString(value)}`)
-          }
-        }
-      }
+      totalAssignments++
 
-      // Fill in any missing values with 0
-      for (let k = 1; k <= maxLayers; k++) {
-        const layerMap = layerValues.get(k)!
-        for (let s = 0; s < tt.n_states(); s++) {
-          if (!layerMap.has(s)) {
-            layerMap.set(s, EXACT_ZERO)
-          }
-        }
+      if (!isConsistentAssignment(tt, events, assignment)) {
+        continue
       }
+      validAssignments++
 
-      // Log the final layer values
-      console.log(`LPS Solver: Final layer values:`)
-      for (let k = 1; k <= maxLayers; k++) {
-        const layerMap = layerValues.get(k)!
-        const entries = Array.from(layerMap.entries()).map(([s, v]) => `state${s}=${exactToString(v)}`).join(', ')
-        console.log(`  Layer ${k}: ${entries}`)
+      // Generate SMTLIB
+      let smtlib: string
+      try {
+        smtlib = generateSMTLIBForAssignment(tt, constraints, events, assignment, layerBound)
+      } catch (e: any) {
+        return { status: 'error', message: e.message ?? String(e) }
       }
-
-      // Log the layer assignment for conditioning events
-      console.log(`LPS Solver: Layer assignment for conditioning events:`)
+      console.log(`LPS Solver: Testing assignment ${testedAssignments + 1}/${validAssignments}`)
+      console.log(`LPS Solver: Assignment being tested:`)
       for (const [key, layer] of assignment.entries()) {
         console.log(`  ${key} -> layer ${layer}`)
       }
+      console.log(`LPS Solver: SMTLIB (first 500 chars):\n${smtlib.substring(0, 500)}...`)
+      testedAssignments++
 
-      const model = buildLPSModelFromResult(tt, assignment, layerValues, maxLayers)
+      // Call Z3
+      let result: WrappedSolverResult
+      try {
+        result = await solver.solve(smtlib, abortSignal)
+      } catch (e: any) {
+        return { status: 'error', message: e.message ?? String(e) }
+      }
 
-      console.log(`LPS Solver: ${totalAssignments} total, ${validAssignments} consistent, ${testedAssignments} tested`)
-      return { status: 'sat', model }
+      if (result.status === 'sat') {
+        console.log(`LPS Solver: SAT found at assignment ${testedAssignments}`)
+        console.log(`LPS Solver: named_assignments_exact keys:`, Object.keys(result.named_assignments_exact))
 
-    } else if (result.status === 'cancelled') {
-      return { status: 'error', message: 'Cancelled' }
+        // Extract layer values from the model using named_assignments_exact (exact numbers)
+        // Variable names are in format a_k_s where k is layer, s is state (1-indexed)
+        const layerValues = new Map<number, Map<number, ExactNumber>>()
+        for (let k = 1; k <= layerBound; k++) {
+          layerValues.set(k, new Map<number, ExactNumber>())
+        }
 
-    } else if (result.status === 'exception') {
-      console.error(`LPS Solver: Z3 exception: ${result.message}`)
-      // Continue to next assignment
+        for (const [varName, value] of Object.entries(result.named_assignments_exact)) {
+          // Parse variable name: a_k_s (layer k, state s, both 1-indexed)
+          const match = varName.match(/^a_(\d+)_(\d+)$/)
+          if (match) {
+            const layer = parseInt(match[1])
+            const stateIndex = parseInt(match[2]) - 1  // Convert to 0-indexed
+            const layerMap = layerValues.get(layer)
+            if (layerMap) {
+              layerMap.set(stateIndex, value)
+              console.log(`LPS Solver: Set layer ${layer}, state ${stateIndex} = ${exactToString(value)}`)
+            }
+          }
+        }
+
+        // Fill in any missing values with 0
+        for (let k = 1; k <= layerBound; k++) {
+          const layerMap = layerValues.get(k)!
+          for (let s = 0; s < tt.n_states(); s++) {
+            if (!layerMap.has(s)) {
+              layerMap.set(s, EXACT_ZERO)
+            }
+          }
+        }
+
+        const realVarValues = new Map<string, ExactNumber>()
+        for (const realVar of variables_in_constraints(constraints).real) {
+          // If Z3 omits an unconstrained real var from the model, use 0 as an arbitrary model completion.
+          realVarValues.set(realVar, result.named_assignments_exact[realVar] ?? EXACT_ZERO)
+        }
+
+        // Log the final layer values
+        console.log(`LPS Solver: Final layer values:`)
+        for (let k = 1; k <= layerBound; k++) {
+          const layerMap = layerValues.get(k)!
+          const entries = Array.from(layerMap.entries()).map(([s, v]) => `state${s}=${exactToString(v)}`).join(', ')
+          console.log(`  Layer ${k}: ${entries}`)
+        }
+
+        // Log the layer assignment for conditioning events
+        console.log(`LPS Solver: Layer assignment for conditioning events:`)
+        for (const [key, layer] of assignment.entries()) {
+          console.log(`  ${key} -> layer ${layer}`)
+        }
+
+        const model = buildLPSModelFromResult(tt, assignment, layerValues, layerBound, realVarValues)
+
+        console.log(`LPS Solver: ${totalAssignments} total, ${validAssignments} consistent, ${testedAssignments} tested`)
+        return { status: 'sat', model }
+
+      } else if (result.status === 'cancelled') {
+        return { status: 'error', message: 'Cancelled' }
+
+      } else if (result.status === 'exception') {
+        console.error(`LPS Solver: Z3 exception: ${result.message}`)
+        // Continue to next assignment
+      }
+      // For 'unsat' and 'unknown', continue to next assignment
     }
-    // For 'unsat' and 'unknown', continue to next assignment
   }
 
   console.log(`LPS Solver: ${totalAssignments} total, ${validAssignments} consistent, ${testedAssignments} tested - UNSAT`)

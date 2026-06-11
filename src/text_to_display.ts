@@ -1600,7 +1600,7 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
     model_container.innerHTML = ''
     try {
       // Run the LPS solver for PopperSAT
-      const lpsResult = await solveLPS(solver, truth_table, constraints, 2, abort_controller.signal)
+      const lpsResult = await solveLPS(solver, truth_table, constraints, undefined, abort_controller.signal)
 
       // Convert LPS result to PopperSATResult format
       let popperResult: PopperSATResult
@@ -1614,7 +1614,11 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
           const free_sentence_vars = free_variables_in_constraint_or_real_expr(
             c_or_re, new LetterSet(), new LetterSet([...tt.letters()])
           )
-          const free_real_vars = free_real_variables_in_constraint_or_real_expr(c_or_re, new Set())
+          const declaredRealVars = new Set(popperModel.realVarValues?.keys() ?? [])
+          const free_real_vars = new Set(
+            [...free_real_variables_in_constraint_or_real_expr(c_or_re, new Set())]
+              .filter((id) => !declaredRealVars.has(id))
+          )
 
           if (!free_sentence_vars.is_empty() || free_real_vars.size > 0) {
             return { tag: 'undeclared-vars', variables: { sentence: [...free_sentence_vars], real: [...free_real_vars] } }
@@ -1680,8 +1684,10 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
             status: 'sat',
             evaluate,
             state_assignments: {},  // LPS model uses layer values instead
-            named_assignments: {},  // LPS model uses layer values instead
-            named_assignments_exact: {}  // LPS model uses layer values instead
+            named_assignments: Object.fromEntries(
+              [...lpsResult.model.realVarValues.entries()].map(([id, value]) => [id, exactToFloat(value)])
+            ),
+            named_assignments_exact: Object.fromEntries(lpsResult.model.realVarValues.entries())
           },
           popperModel,
           lpsResult
@@ -1698,12 +1704,20 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
           smtlib_input: '',
           solver_output: { status: 'unknown' }
         }
-      } else {
-        // Error or cancelled
+      } else if (lpsResult.status === 'error' && lpsResult.message === 'Cancelled') {
         popperResult = {
           constraints: { original: constraints, translated: [], extra: [], eliminated: [] },
           smtlib_input: '',
           solver_output: { status: 'cancelled' }
+        }
+      } else {
+        popperResult = {
+          constraints: { original: constraints, translated: [], extra: [], eliminated: [] },
+          smtlib_input: '',
+          solver_output: {
+            status: 'exception',
+            message: lpsResult.message
+          }
         }
       }
 

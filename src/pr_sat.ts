@@ -479,13 +479,17 @@ const letters_in_constraint = (constraint: Constraint, letters: VariableLists = 
 
 // Will modify letters array.
 const letters_in_real_expr = (expr: RealExpr, letters: VariableLists): VariableLists => {
-  if (expr.tag === 'literal' || expr.tag === 'variable' || expr.tag === 'state_variable_sum') {
+  if (expr.tag === 'literal' || expr.tag === 'state_variable_sum') {
+    return letters
+  } else if (expr.tag === 'variable') {
+    letters.real.push(expr.id)
     return letters
   } else if (expr.tag === 'given_probability') {
     const al = letters_in_sentence(expr.arg, letters.sentence)
     return { real: letters.real, sentence: letters_in_sentence(expr.given, al) }
   } else if (expr.tag === 'power') {
-    return letters_in_real_expr(expr.base, letters)
+    const bl = letters_in_real_expr(expr.base, letters)
+    return letters_in_real_expr(expr.exponent, bl)
   } else if (expr.tag === 'negative') {
     return letters_in_real_expr(expr.expr, letters)
   } else if (expr.tag === 'divide') {
@@ -1182,7 +1186,7 @@ export const translate_real_expr = (tt: TruthTable, expr: RealExpr): RealExpr =>
   }
 }
 
-const flatten_constraint_children = (tag: 'conjunction' | 'disjunction' | 'conditional', constraint: Constraint, acc: S[] = []): S[] => {
+const flatten_constraint_children = (tag: 'conjunction' | 'disjunction', constraint: Constraint, acc: S[] = []): S[] => {
   if (constraint.tag === tag) {
     const lc = flatten_constraint_children(tag, constraint.left, acc)
     return flatten_constraint_children(tag, constraint.right, lc)
@@ -1220,7 +1224,7 @@ export const constraint_to_smtlib = (constraint: Constraint): S => {
   } else if (constraint.tag === 'disjunction') {
     return ['or', ...flatten_constraint_children(constraint.tag, constraint.left), ...flatten_constraint_children(constraint.tag, constraint.right)]
   } else if (constraint.tag === 'conditional') {
-    return ['=>', constraint_to_smtlib(constraint.left), ...flatten_constraint_children(constraint.tag, constraint.right)]
+    return ['=>', constraint_to_smtlib(constraint.left), constraint_to_smtlib(constraint.right)]
   } else if (constraint.tag === 'biconditional') {
     return ['=', constraint_to_smtlib(constraint.left), constraint_to_smtlib(constraint.right)]
   } else if (constraint.tag === 'equal') {
@@ -1245,19 +1249,26 @@ export const state_index_id = (state_index: number): string => {
 }
 
 export const real_expr_to_smtlib = (expr: RealExpr): S => {
-  const flatten_children = (tag: 'plus' | 'multiply' | 'minus' | 'divide', constraint: RealExpr, acc: S[] = []): S[] => {
+  const flatten_children = (tag: 'plus' | 'multiply', constraint: RealExpr, acc: S[] = []): S[] => {
     if (constraint.tag === tag) {
-      if (constraint.tag === 'divide') {
-        const lc = flatten_children(tag, constraint.numerator, acc)
-        return flatten_children(tag, constraint.denominator, lc)
-      } else {
-        const lc = flatten_children(tag, constraint.left, acc)
-        return flatten_children(tag, constraint.right, lc)
-      }
+      const lc = flatten_children(tag, constraint.left, acc)
+      return flatten_children(tag, constraint.right, lc)
     } else {
       acc.push(real_expr_to_smtlib(constraint))
       return acc
     }
+  }
+
+  const integer_literal = (e: RealExpr): number | undefined => {
+    if (e.tag === 'literal' && Number.isInteger(e.value)) return e.value
+    if (e.tag === 'negative' && e.expr.tag === 'literal' && Number.isInteger(e.expr.value)) return -e.expr.value
+    return undefined
+  }
+
+  const pow_smtlib = (base: S, exponent: number): S => {
+    if (exponent === 0) return '1'
+    if (exponent === 1) return base
+    return ['*', ...Array.from({ length: exponent }, () => base)]
   }
 
   if (expr.tag === 'literal') {
@@ -1270,8 +1281,11 @@ export const real_expr_to_smtlib = (expr: RealExpr): S => {
     // I should probably use a result type for this but I don't want to 😭.
     throw new Error('Unable to convert a given_probability to an SMTLIB S-expression!  Did you forget to call translate_*?')
   } else if (expr.tag === 'power') {
-    // throw new Error('Unable to convert a power to an SMTLIB S-expression!  Did you forget to call translate_*?')
-    return ['^', real_expr_to_smtlib(expr.base), real_expr_to_smtlib(expr.exponent)]
+    const exponent = integer_literal(expr.exponent)
+    if (exponent === undefined || exponent < 0) {
+      throw new Error('Only non-negative integer exponents can be converted to SMTLIB')
+    }
+    return pow_smtlib(real_expr_to_smtlib(expr.base), exponent)
   } else if (expr.tag === 'state_variable_sum') {
     if (expr.indices.length === 0) {
       return '0'
@@ -1283,11 +1297,11 @@ export const real_expr_to_smtlib = (expr: RealExpr): S => {
   } else if (expr.tag === 'plus') {
     return ['+', ...flatten_children(expr.tag, expr.left), ...flatten_children(expr.tag, expr.right)]
   } else if (expr.tag === 'minus') {
-    return ['-', ...flatten_children(expr.tag, expr.left), real_expr_to_smtlib(expr.right)]
+    return ['-', real_expr_to_smtlib(expr.left), real_expr_to_smtlib(expr.right)]
   } else if (expr.tag === 'multiply') {
     return ['*', ...flatten_children(expr.tag, expr.left), ...flatten_children(expr.tag, expr.right)]
   } else if (expr.tag === 'divide') {
-    return ['/', ...flatten_children(expr.tag, expr.numerator), real_expr_to_smtlib(expr.denominator)]
+    return ['/', real_expr_to_smtlib(expr.numerator), real_expr_to_smtlib(expr.denominator)]
     // return ['div', ...flatten_children(expr.tag, expr.numerator), real_expr_to_smtlib(expr.denominator)]
   } else {
     throw new Error('real_expr_to_smtlib fallthrough')

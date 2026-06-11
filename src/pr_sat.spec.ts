@@ -396,12 +396,12 @@ describe('*_to_smtlib', () => {
   })
   test('- (flat)', () => {
     const expr = minus(minus(minus(minus(a, b), c), d), e)
-    const expected = ['-', 'a', 'b', 'c', 'd', 'e']
+    const expected = ['-', ['-', ['-', ['-', 'a', 'b'], 'c'], 'd'], 'e']
     expect(real_expr_to_smtlib(expr)).toEqual(expected)
   })
   test('- (half-flat)', () => {
     const expr = minus(minus(minus(minus(a, b), c), d), minus(e, minus(f, minus(g, h))))
-    const expected = ['-', 'a', 'b', 'c', 'd', ['-', 'e', ['-', 'f', ['-', 'g', 'h']]]]
+    const expected = ['-', ['-', ['-', ['-', 'a', 'b'], 'c'], 'd'], ['-', 'e', ['-', 'f', ['-', 'g', 'h']]]]
     expect(real_expr_to_smtlib(expr)).toEqual(expected)
   })
   test('-', () => {
@@ -411,12 +411,12 @@ describe('*_to_smtlib', () => {
   })
   test('/ (flat)', () => {
     const expr = divide(divide(divide(divide(a, b), c), d), e)
-    const expected = ['/', 'a', 'b', 'c', 'd', 'e']
+    const expected = ['/', ['/', ['/', ['/', 'a', 'b'], 'c'], 'd'], 'e']
     expect(real_expr_to_smtlib(expr)).toEqual(expected)
   })
   test('/ (half-flat)', () => {
     const expr = divide(divide(divide(divide(a, b), c), d), divide(e, divide(f, divide(g, h))))
-    const expected = ['/', 'a', 'b', 'c', 'd', ['/', 'e', ['/', 'f', ['/', 'g', 'h']]]]
+    const expected = ['/', ['/', ['/', ['/', 'a', 'b'], 'c'], 'd'], ['/', 'e', ['/', 'f', ['/', 'g', 'h']]]]
     expect(real_expr_to_smtlib(expr)).toEqual(expected)
   })
   test('/', () => {

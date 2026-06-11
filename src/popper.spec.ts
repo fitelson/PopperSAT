@@ -24,14 +24,14 @@ type Sentence = PrSat['Sentence']
 type RealExpr = PrSat['RealExpr']
 type Constraint = PrSat['Constraint']
 
-const { eq, gt, cnot } = constraint_builder
-const { cpr, lit, multiply, plus } = real_expr_builder
+const { eq, gt, cnot, cor, cimp, ciff } = constraint_builder
+const { cpr, lit, multiply, plus, divide, power, vbl, neg } = real_expr_builder
 const { and, not, letter, val } = sentence_builder
 
 // Helper: unconditional probability in Popper's system is Pr(A | ⊤)
 const pr = (s: Sentence): RealExpr => cpr(s, val(true))
 
-const [A, B] = [letter('A'), letter('B')]
+const [A, B, C] = [letter('A'), letter('B'), letter('C')]
 
 let solver: WrappedSolver
 
@@ -160,6 +160,101 @@ describe('LPS Solver', () => {
 
     // Should be UNSAT because Bayes' theorem is a logical truth
     expect(result.status).toBe('unsat')
+  }, 30000)
+
+  test('adaptive layer bound finds models needing three layers', async () => {
+    const constraints: Constraint[] = [
+      eq(cpr(B, val(true)), lit(0)),
+      eq(cpr(A, B), lit(0)),
+      eq(cpr(C, and(A, B)), lit(0.5)),
+    ]
+    const tt = new TruthTable(variables_in_constraints(constraints))
+
+    const twoLayerResult = await solveLPS(solver, tt, constraints, 2)
+    expect(twoLayerResult.status).toBe('unsat')
+
+    const threeLayerResult = await solveLPS(solver, tt, constraints, 3)
+    expect(threeLayerResult.status).toBe('sat')
+
+    const adaptiveResult = await solveLPS(solver, tt, constraints)
+    expect(adaptiveResult.status).toBe('sat')
+  }, 30000)
+
+  test('constraint-level conditionals and biconditionals solve', async () => {
+    const constraints: Constraint[] = [
+      cimp(eq(pr(A), lit(0)), eq(pr(A), lit(0))),
+      ciff(eq(pr(B), lit(1)), eq(pr(B), lit(1))),
+    ]
+    const tt = new TruthTable(variables_in_constraints(constraints))
+    const result = await solveLPS(solver, tt, constraints)
+
+    expect(result.status).toBe('sat')
+  }, 30000)
+
+  test('extracts conditioning events inside constraint-level conditionals', async () => {
+    const constraints: Constraint[] = [
+      cimp(eq(cpr(A, B), lit(1)), eq(lit(0), lit(1))),
+    ]
+    const tt = new TruthTable(variables_in_constraints(constraints))
+    const result = await solveLPS(solver, tt, constraints)
+
+    expect(result.status).toBe('sat')
+  }, 30000)
+
+  test('declares free real variables', async () => {
+    const constraints: Constraint[] = [
+      eq(vbl('x'), lit(0.5))
+    ]
+    const tt = new TruthTable(variables_in_constraints(constraints))
+    const result = await solveLPS(solver, tt, constraints)
+
+    expect(result.status).toBe('sat')
+    if (result.status !== 'sat') return
+
+    const popperModel = lpsModelToPopperModel(tt, result.model)
+    expect(evaluateRealExpr(tt, popperModel, vbl('x'))).toBe(0.5)
+  }, 30000)
+
+  test('guards explicit division by zero', async () => {
+    const constraints: Constraint[] = [
+      eq(divide(lit(1), lit(0)), lit(0))
+    ]
+    const tt = new TruthTable(variables_in_constraints(constraints))
+    const result = await solveLPS(solver, tt, constraints)
+
+    expect(result.status).toBe('unsat')
+  }, 30000)
+
+  test('does not hoist division guards out of disjunctions', async () => {
+    const constraints: Constraint[] = [
+      eq(vbl('x'), lit(0)),
+      cor(eq(lit(1), lit(1)), eq(divide(lit(1), vbl('x')), lit(2))),
+    ]
+    const tt = new TruthTable(variables_in_constraints(constraints))
+    const result = await solveLPS(solver, tt, constraints)
+
+    expect(result.status).toBe('sat')
+  }, 30000)
+
+  test('does not hoist negative-power guards out of implications', async () => {
+    const constraints: Constraint[] = [
+      eq(vbl('x'), lit(0)),
+      cimp(eq(lit(0), lit(1)), eq(power(vbl('x'), neg(lit(1))), lit(2))),
+    ]
+    const tt = new TruthTable(variables_in_constraints(constraints))
+    const result = await solveLPS(solver, tt, constraints)
+
+    expect(result.status).toBe('sat')
+  }, 30000)
+
+  test('expands integer powers', async () => {
+    const constraints: Constraint[] = [
+      eq(power(lit(2), lit(3)), lit(8))
+    ]
+    const tt = new TruthTable(variables_in_constraints(constraints))
+    const result = await solveLPS(solver, tt, constraints)
+
+    expect(result.status).toBe('sat')
   }, 30000)
 })
 

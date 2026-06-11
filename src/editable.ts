@@ -207,7 +207,7 @@ export class EditableDLL<T> {
           f(e)
         }
       },
-      unwatch: () => this.insert_watchers.delete(f)
+      unwatch: () => this.remove_watchers.delete(f)
     }
     this.remove_watchers.set(f, w)
     return w
