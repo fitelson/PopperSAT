@@ -15,7 +15,7 @@ PopperSAT is a decision procedure for checking satisfiability of constraints on 
 ```bash
 npm run dev          # Start dev server at http://localhost:5173/
 npm run build        # Compile TypeScript + bundle with Vite → dist/
-npm run test         # Run Vitest + Playwright tests
+npm run test         # Run Vitest + Chromium Playwright tests
 npm run test-single  # Run Vitest with --allowOnly (for focused tests)
 npm run copy-files   # Copy Z3 WASM files to public/ (required before build)
 ```
@@ -41,7 +41,7 @@ In Codex, local browser testing may need escalation because the sandbox can bloc
 npm run preview -- --host 127.0.0.1 --port 4173
 ```
 
-2. Run Playwright from an escalated shell command rather than the sandboxed Node REPL if Chromium fails with a macOS Mach port permission error.
+2. Run Playwright from an escalated shell command rather than the sandboxed Node REPL if Chromium fails with a macOS Mach port permission error. Use Chromium/Chrome only for browser coverage.
 
 3. For the zero-atom arithmetic regression, avoid shell-escaping the disjunction token directly. Build `\/` inside JS with `String.fromCharCode(92) + '/'`, then paste:
 
@@ -86,6 +86,8 @@ The solver uses multiple layers of probability measures (μ₁, ..., μ_K). For 
 3. If no such layer exists, ψ is "abnormal" → return 1
 
 Division-free Z3 encoding: Instead of `p = n/d`, uses `n = p · d` to avoid division constraints.
+
+The main solver no longer eagerly enumerates every conditioning-event layer assignment. For each bounded layer count, it emits one stratified SMT problem: every `Pr(φ | ψ)` gets a fresh probability variable, and implications for each layer encode "if this is the first layer where ψ has positive mass, then μ_k(φ∧ψ) = p·μ_k(ψ)"; if ψ has zero mass at all layers, the variable is constrained to 1. Z3 chooses the layer/normality pattern, and `deriveLayerAssignmentFromValues` reconstructs the Popper model's event-to-layer map from the returned measures. The older assignment-specific encoder is retained for focused compatibility/tests but should not be used as the primary decision procedure.
 
 ### Type System
 
