@@ -8,7 +8,7 @@ PopperSAT is a decision procedure for checking satisfiability of constraints on 
 
 **Key semantic rule**: If ψ is "abnormal" (zero probability at all layers), then P(φ|ψ) = 1 for ALL φ.
 
-**Important**: This is a local deployment build manually uploaded to fitelson.org. Do not use git push; changes are manually deployed by copying the `dist/` folder.
+**Important**: Changes are tracked in the `fitelson/PopperSAT` GitHub repository and production is manually deployed by uploading the built `dist/` folder to `fitelson.org`.
 
 ## Commands
 
@@ -18,6 +18,17 @@ npm run build        # Compile TypeScript + bundle with Vite → dist/
 npm run test         # Run Vitest + Playwright tests
 npm run test-single  # Run Vitest with --allowOnly (for focused tests)
 npm run copy-files   # Copy Z3 WASM files to public/ (required before build)
+```
+
+## Deployment
+
+Live site: `https://fitelson.org/PopperSAT/dist/`
+
+Build and deploy:
+
+```bash
+npm run build
+rsync -av --delete --exclude='.DS_Store' dist/ fitelson.org:/home/fitelson/www/www/PopperSAT/dist/
 ```
 
 ## Architecture
