@@ -1877,17 +1877,22 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
         // Use the Popper model from the LPS solver result
         const popperModel = state.solver_output.popperModel!
 
+        const nAtoms = state.truth_table.n_letters()
+
         // Calculate table size info
         const nProps = Math.pow(2, state.truth_table.n_states())
         const tableSize = nProps * nProps
 
         model_container.innerHTML = ''
+        right_side.innerHTML = ''
 
         // Show info about the model and optional table toggle
-        const modelInfo = el('div', { style: 'margin-bottom: 0.5em;' },
-          `Popper model found. Conditional probability table: ${nProps} × ${nProps} (${tableSize.toLocaleString()} values). `,
-          'Use the evaluator to query specific values.'
-        )
+        const modelInfo = nAtoms === 0
+          ? el('div', { style: 'margin-bottom: 0.5em;' }, 'Popper model found.')
+          : el('div', { style: 'margin-bottom: 0.5em;' },
+            `Popper model found. Conditional probability table: ${nProps} × ${nProps} (${tableSize.toLocaleString()} values). `,
+            'Use the evaluator to query specific values.'
+          )
         model_container.appendChild(modelInfo)
 
         // Number of atomic sentences determines which options to show:
@@ -1895,7 +1900,6 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
         // 1 ≤ n ≤ 2: show both table and axiom verification
         // n = 3: show only table (axiom verification too slow)
         // n ≥ 4: show neither (table too large)
-        const nAtoms = state.truth_table.n_letters()
 
         // Optional table display with toggle (only for 1 ≤ n ≤ 3)
         if (nAtoms > 0 && nAtoms <= 3) {
@@ -1945,7 +1949,9 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
           }
         }
 
-        right_side.appendChild(evaluators.element)
+        if (nAtoms > 0) {
+          right_side.appendChild(evaluators.element)
+        }
       } else if (state.solver_output.solver_output.status === 'unsat') {
         state_display.innerHTML = ''
         state_display.append(Constants.UNSAT)
