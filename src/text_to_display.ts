@@ -2182,7 +2182,7 @@ const main = (): HTMLElement => {
 
   return el('div', {},
     el('div', { class: 'header' },
-      el('div', { style: 'font-weight: bold; font-size: 1.5em;' }, 'PopperSAT 1.0b'),
+      el('div', { style: 'font-weight: bold; font-size: 1.5em;' }, 'PopperSAT 1.0'),
       el('div', { style: 'font-size: 0.9em; margin-top: 0.3em; color: white;' },
         'PopperSAT is a decision procedure for Popper functions.',
         el('br', {}),
@@ -2192,7 +2192,7 @@ const main = (): HTMLElement => {
         el('br', {}),
         'Instead, use "Pr(X | t)", where "t" is a constant symbol representing an arbitrary tautology.',
         el('br', {}),
-        'This is a beta version. Please report any bugs to ',
+        'Please report any bugs to ',
         el('a', { href: 'http://fitelson.org/', target: '_blank' }, 'Branden Fitelson'),
         '.'
       ),
