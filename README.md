@@ -20,3 +20,8 @@ npm install
 ```
 
 A link to PrSAT running locally will appear in your terminal.
+
+## Contributors
+
+- Branden Fitelson
+- OpenAI Codex
