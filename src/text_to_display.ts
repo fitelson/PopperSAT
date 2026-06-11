@@ -2217,8 +2217,7 @@ if (!hasMathMLSupport()) {
     '• Firefox (any recent version)\n' +
     '• Safari (any recent version)\n' +
     '• Edge 109+ (released January 2023)'
-  alert(msg)
-  throw new Error('Browser does not support MathML')
+  console.warn(msg)
 }
 
 root.appendChild(main())

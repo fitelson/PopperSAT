@@ -419,12 +419,6 @@ describe('z3', () => {
         expect(sat).toEqual('unsat')
       })
       describe('s (which takes too long so we\'re testing timing stuff)', () => {
-        test.skip('by itself', async () => {
-          const { Context } = await init_z3()
-          const constraints = desideratum(sk)
-          const { status: sat, model: _ } = await pr_sat(Context('main'), constraints)
-          expect(sat).toEqual('sat')
-        })
         test('with timeout', async () => {
           const { Context } = await init_z3()
           const constraints = desideratum(sk)

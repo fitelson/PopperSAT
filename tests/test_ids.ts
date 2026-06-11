@@ -1,4 +1,4 @@
-import { readonly } from "../src/utils"
+const readonly = <T extends object>(value: T): Readonly<T> => Object.freeze(value)
 
 export type TestIdGenerator = { prefix: string, gen: () => string, get: (index: number) => string }
 
@@ -35,9 +35,6 @@ export const state_row = readonly({
 
 export type GenericMultiInputTestIds = {
   id: string
-  // multi: Readonly<{
-  //   id: string
-  // }>
   toggle: string
   batch: Readonly<{
     id: string
