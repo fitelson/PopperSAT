@@ -31,6 +31,29 @@ npm run build
 rsync -av --delete --exclude='.DS_Store' dist/ fitelson.org:/home/fitelson/www/www/PopperSAT/dist/
 ```
 
+## Browser/UI Testing Notes
+
+In Codex, local browser testing may need escalation because the sandbox can block both localhost binding and Chromium startup:
+
+1. Start the built app with Vite preview outside the sandbox if `listen EPERM` occurs:
+
+```bash
+npm run preview -- --host 127.0.0.1 --port 4173
+```
+
+2. Run Playwright from an escalated shell command rather than the sandboxed Node REPL if Chromium fails with a macOS Mach port permission error.
+
+3. For the zero-atom arithmetic regression, avoid shell-escaping the disjunction token directly. Build `\/` inside JS with `String.fromCharCode(92) + '/'`, then paste:
+
+```text
+x = 0
+(1 = 1) \/ (1 / x = 2)
+```
+
+4. If batch input is hidden, click `Show Batch Input`; after `Parse`, wait for `[data-testid="find-model"]` to become enabled before clicking `Find Model`.
+
+The expected UI result is SAT with `Popper model found`, but no `Show full conditional probability table`, no `Verify Popper's axioms`, and no `Save table as image` control.
+
 ## Architecture
 
 ### Core Algorithm: Lexicographic Probability Systems (LPS)

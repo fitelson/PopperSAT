@@ -1735,8 +1735,8 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
       //   fallthrough('start_search_solver', status)
       // }
 
-      // Only add the table image button if we have a SAT result (model/table exists)
-      if (popperResult.solver_output.status === 'sat') {
+      // Only add the table image button when there is a non-trivial table UI to save.
+      if (popperResult.solver_output.status === 'sat' && truth_table.n_letters() > 0) {
         const save_table_image_button = el('input', { type: 'button', value: 'Save table as image', style: 'margin-top: 0.4em;' }) as HTMLButtonElement
         save_table_image_button.onclick = async () => {
           try {
@@ -1891,13 +1891,14 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
         model_container.appendChild(modelInfo)
 
         // Number of atomic sentences determines which options to show:
-        // n ≤ 2: show both table and axiom verification
+        // n = 0: show neither (only the trivial proposition exists)
+        // 1 ≤ n ≤ 2: show both table and axiom verification
         // n = 3: show only table (axiom verification too slow)
         // n ≥ 4: show neither (table too large)
         const nAtoms = state.truth_table.n_letters()
 
-        // Optional table display with toggle (only for n ≤ 3)
-        if (nAtoms <= 3) {
+        // Optional table display with toggle (only for 1 ≤ n ≤ 3)
+        if (nAtoms > 0 && nAtoms <= 3) {
           const tableContainer = el('div', {})
           const showTableCheckbox = el('input', { type: 'checkbox', id: 'show-popper-table' }) as HTMLInputElement
           const showTableLabel = el('label', { for: 'show-popper-table', style: 'cursor: pointer; user-select: none;' },
@@ -1919,8 +1920,8 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
           }
         }
 
-        // Axiom verification section (only for n ≤ 2)
-        if (nAtoms <= 2) {
+        // Axiom verification section (only for 1 ≤ n ≤ 2)
+        if (nAtoms > 0 && nAtoms <= 2) {
           const axiomContainer = el('div', { style: 'margin-top: 1em;' })
           const verifyAxiomsCheckbox = el('input', { type: 'checkbox', id: 'verify-popper-axioms' }) as HTMLInputElement
           const verifyAxiomsLabel = el('label', { for: 'verify-popper-axioms', style: 'cursor: pointer; user-select: none;' },
