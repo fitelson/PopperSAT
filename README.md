@@ -1,5 +1,7 @@
 # PopperSAT
 
+Current release: **1.0**
+
 PopperSAT is a browser-based decision procedure for satisfiability of constraints on Popper probability functions. Conditional probability is primitive, so probabilities must be written in two-place form, such as `Pr(A | true)`.
 
 ## Installation
