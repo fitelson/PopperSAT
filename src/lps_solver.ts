@@ -13,13 +13,15 @@
  * where d = μ_k(ψ), n = μ_k(φ ∧ ψ), and p is the probability value.
  */
 
-import { TruthTable, variables_in_constraints } from "./pr_sat"
+import { literal_to_string, MAX_ABS_SOLVER_EXPONENT, TruthTable, variables_in_constraints } from "./pr_sat"
 import { PrSat } from "./types"
 import { Proposition, entails, conjoin, PopperModel } from "./popper"
 import { WrappedSolver, WrappedSolverResult, ExactNumber, EXACT_ZERO, EXACT_ONE, exactAdd, exactDiv, exactIsZero, exactToFloat, exactToString, exactFromRational, rationalFromInt } from "./z3_integration"
 
 type RealExpr = PrSat['RealExpr']
 type Constraint = PrSat['Constraint']
+
+const debugLog = (..._args: unknown[]): void => { void _args }
 
 /**
  * A layer assignment maps each conditioning event (as a proposition/set of states)
@@ -494,14 +496,14 @@ export type LPSModel = {
  */
 export function lpsModelToPopperModel(_tt: TruthTable, lpsModel: LPSModel): PopperModel {
   // Debug: log the model structure once
-  console.log('lpsModelToPopperModel: numLayers =', lpsModel.numLayers)
-  console.log('lpsModelToPopperModel: layerAssignment size =', lpsModel.layerAssignment.size)
-  console.log('lpsModelToPopperModel: layerValues size =', lpsModel.layerValues.size)
+  debugLog('lpsModelToPopperModel: numLayers =', lpsModel.numLayers)
+  debugLog('lpsModelToPopperModel: layerAssignment size =', lpsModel.layerAssignment.size)
+  debugLog('lpsModelToPopperModel: layerValues size =', lpsModel.layerValues.size)
   for (const [k, layerMap] of lpsModel.layerValues.entries()) {
-    console.log(`  Layer ${k}: ${layerMap.size} entries`)
+    debugLog(`  Layer ${k}: ${layerMap.size} entries`)
     for (const [state, val] of layerMap.entries()) {
       if (!exactIsZero(val)) {
-        console.log(`    state ${state} = ${exactToString(val)}`)
+        debugLog(`    state ${state} = ${exactToString(val)}`)
       }
     }
   }
@@ -537,12 +539,12 @@ export function lpsModelToPopperModel(_tt: TruthTable, lpsModel: LPSModel): Popp
     },
 
     conditionalProbability: (phi: Proposition, psi: Proposition) => {
-      console.log(`PopperModel.conditionalProbability wrapper called`)
+      debugLog(`PopperModel.conditionalProbability wrapper called`)
       return lpsModel.conditionalProbability(phi, psi)
     },
 
     conditionalProbabilityExact: (phi: Proposition, psi: Proposition) => {
-      console.log(`PopperModel.conditionalProbabilityExact wrapper called`)
+      debugLog(`PopperModel.conditionalProbabilityExact wrapper called`)
       return lpsModel.conditionalProbabilityExact(phi, psi)
     },
 
@@ -726,8 +728,8 @@ export function transformRealExprToSMTLIB(
   const guards: string[] = []
 
   const integerLiteral = (e: RealExpr): number | undefined => {
-    if (e.tag === 'literal' && Number.isInteger(e.value)) return e.value
-    if (e.tag === 'negative' && e.expr.tag === 'literal' && Number.isInteger(e.expr.value)) return -e.expr.value
+    if (e.tag === 'literal' && Number.isSafeInteger(e.value)) return e.value
+    if (e.tag === 'negative' && e.expr.tag === 'literal' && Number.isSafeInteger(e.expr.value)) return -e.expr.value
     return undefined
   }
 
@@ -740,7 +742,7 @@ export function transformRealExprToSMTLIB(
 
   function transform(e: RealExpr): string {
     if (e.tag === 'literal') {
-      return e.value.toString()
+      return literal_to_string(e)
     } else if (e.tag === 'variable') {
       return e.id
     } else if (e.tag === 'given_probability') {
@@ -790,6 +792,9 @@ export function transformRealExprToSMTLIB(
       const exponent = integerLiteral(e.exponent)
       if (exponent === undefined) {
         throw new Error('Only integer exponents are supported in constraints')
+      }
+      if (Math.abs(exponent) > MAX_ABS_SOLVER_EXPONENT) {
+        throw new Error(`Exponent magnitude must be at most ${MAX_ABS_SOLVER_EXPONENT}; received ${exponent}.`)
       }
       const base = transform(e.base)
       if (exponent >= 0) {
@@ -884,8 +889,8 @@ export function transformRealExprToStratifiedSMTLIB(
   const guards: string[] = []
 
   const integerLiteral = (e: RealExpr): number | undefined => {
-    if (e.tag === 'literal' && Number.isInteger(e.value)) return e.value
-    if (e.tag === 'negative' && e.expr.tag === 'literal' && Number.isInteger(e.expr.value)) return -e.expr.value
+    if (e.tag === 'literal' && Number.isSafeInteger(e.value)) return e.value
+    if (e.tag === 'negative' && e.expr.tag === 'literal' && Number.isSafeInteger(e.expr.value)) return -e.expr.value
     return undefined
   }
 
@@ -898,7 +903,7 @@ export function transformRealExprToStratifiedSMTLIB(
 
   function transform(e: RealExpr): string {
     if (e.tag === 'literal') {
-      return e.value.toString()
+      return literal_to_string(e)
     } else if (e.tag === 'variable') {
       return e.id
     } else if (e.tag === 'given_probability') {
@@ -940,6 +945,9 @@ export function transformRealExprToStratifiedSMTLIB(
       const exponent = integerLiteral(e.exponent)
       if (exponent === undefined) {
         throw new Error('Only integer exponents are supported in constraints')
+      }
+      if (Math.abs(exponent) > MAX_ABS_SOLVER_EXPONENT) {
+        throw new Error(`Exponent magnitude must be at most ${MAX_ABS_SOLVER_EXPONENT}; received ${exponent}.`)
       }
       const base = transform(e.base)
       if (exponent >= 0) {
@@ -1155,41 +1163,41 @@ export function buildLPSModelFromResult(
     const psiArr = Array.from(psi).sort().join(',')
 
     // Debug: log every call
-    console.log(`LPSModel.conditionalProbabilityExact(phi={${phiArr}}, psi={${psiArr}})`)
+    debugLog(`LPSModel.conditionalProbabilityExact(phi={${phiArr}}, psi={${psiArr}})`)
 
     // If psi is empty (⊥), it's abnormal -> return 1
     if (psi.size === 0) {
-      console.log(`  -> returning 1 (psi is empty)`)
+      debugLog(`  -> returning 1 (psi is empty)`)
       return EXACT_ONE
     }
 
     // Find the layer for psi
     const psiKey = propositionKey(psi)
     const layer = assignment.get(psiKey)
-    console.log(`  psiKey=${psiKey}, layer from assignment=${layer}`)
+    debugLog(`  psiKey=${psiKey}, layer from assignment=${layer}`)
 
     // If psi is abnormal (layer 0 or not found with zero mass), return 1
     if (layer === 0) {
-      console.log(`  -> returning 1 (layer === 0)`)
+      debugLog(`  -> returning 1 (layer === 0)`)
       return EXACT_ONE
     }
 
     // Find first layer where psi has positive mass
     let psiLayer = layer
     if (psiLayer === undefined) {
-      console.log(`  psiLayer undefined, searching layer values...`)
+      debugLog(`  psiLayer undefined, searching layer values...`)
       // Not in assignment, compute from layer values
       for (let k = 1; k <= numLayers; k++) {
         const layerVals = layerValues.get(k)
-        console.log(`    layer ${k}: layerVals exists=${!!layerVals}`)
+        debugLog(`    layer ${k}: layerVals exists=${!!layerVals}`)
         if (layerVals) {
           let mass: ExactNumber = EXACT_ZERO
           for (const state of psi) {
             const stateVal = layerVals.get(state) ?? EXACT_ZERO
-            console.log(`      state ${state}: val=${exactToString(stateVal)}`)
+            debugLog(`      state ${state}: val=${exactToString(stateVal)}`)
             mass = exactAdd(mass, stateVal)
           }
-          console.log(`    layer ${k} total mass=${exactToString(mass)}`)
+          debugLog(`    layer ${k} total mass=${exactToString(mass)}`)
           if (!exactIsZero(mass)) {
             psiLayer = k
             break
@@ -1198,10 +1206,10 @@ export function buildLPSModelFromResult(
       }
     }
 
-    console.log(`  final psiLayer=${psiLayer}`)
+    debugLog(`  final psiLayer=${psiLayer}`)
 
     if (psiLayer === undefined) {
-      console.log(`  -> returning 1 (psiLayer undefined after search)`)
+      debugLog(`  -> returning 1 (psiLayer undefined after search)`)
       return EXACT_ONE  // Abnormal
     }
 
@@ -1210,7 +1218,7 @@ export function buildLPSModelFromResult(
     const layerVals = layerValues.get(psiLayer)
 
     if (!layerVals) {
-      console.log(`  -> returning 1 (layerVals not found for psiLayer)`)
+      debugLog(`  -> returning 1 (layerVals not found for psiLayer)`)
       return EXACT_ONE  // Shouldn't happen
     }
 
@@ -1220,7 +1228,7 @@ export function buildLPSModelFromResult(
     }
 
     if (exactIsZero(psiMass)) {
-      console.log(`  -> returning 1 (psiMass === 0)`)
+      debugLog(`  -> returning 1 (psiMass === 0)`)
       return EXACT_ONE  // Abnormal at this layer
     }
 
@@ -1230,8 +1238,8 @@ export function buildLPSModelFromResult(
     }
 
     const result = exactDiv(intersectionMass, psiMass)
-    console.log(`  intersection={${Array.from(intersection).join(',')}}, psiMass=${exactToString(psiMass)}, intersectionMass=${exactToString(intersectionMass)}`)
-    console.log(`  -> returning ${exactToString(result)}`)
+    debugLog(`  intersection={${Array.from(intersection).join(',')}}, psiMass=${exactToString(psiMass)}, intersectionMass=${exactToString(intersectionMass)}`)
+    debugLog(`  -> returning ${exactToString(result)}`)
 
     return result
   }
@@ -1273,7 +1281,7 @@ export async function solveLPS(
   }
 
   const events = extractConditioningEvents(tt, constraints)
-  console.log(`LPS Solver: Found ${events.length} conditioning events`)
+  debugLog(`LPS Solver: Found ${events.length} conditioning events`)
   const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs
   const forcedLayerOneEvents = deriveForcedLayerOneEvents(tt, constraints)
 
@@ -1294,7 +1302,7 @@ export async function solveLPS(
   const layerBounds = maxLayers === undefined
     ? Array.from({ length: maxLayerBound }, (_, i) => i + 1)
     : [maxLayerBound]
-  console.log(`LPS Solver: Max layers = ${maxLayerBound}`)
+  debugLog(`LPS Solver: Max layers = ${maxLayerBound}`)
 
   let testedLayerBounds = 0
 
@@ -1306,7 +1314,7 @@ export async function solveLPS(
       return { status: 'unknown' }
     }
 
-    console.log(`LPS Solver: Trying stratified ${layerBound} layer(s)`)
+    debugLog(`LPS Solver: Trying stratified ${layerBound} layer(s)`)
     testedLayerBounds++
 
     let smtlib: string
@@ -1315,7 +1323,7 @@ export async function solveLPS(
     } catch (e: any) {
       return { status: 'error', message: e.message ?? String(e) }
     }
-    console.log(`LPS Solver: Stratified SMTLIB (first 500 chars):\n${smtlib.substring(0, 500)}...`)
+    debugLog(`LPS Solver: Stratified SMTLIB (first 500 chars):\n${smtlib.substring(0, 500)}...`)
 
     let result: WrappedSolverResult
     try {
@@ -1330,8 +1338,8 @@ export async function solveLPS(
     }
 
     if (result.status === 'sat') {
-      console.log(`LPS Solver: SAT found with ${layerBound} layer(s)`)
-      console.log(`LPS Solver: named_assignments_exact keys:`, Object.keys(result.named_assignments_exact))
+      debugLog(`LPS Solver: SAT found with ${layerBound} layer(s)`)
+      debugLog(`LPS Solver: named_assignments_exact keys:`, Object.keys(result.named_assignments_exact))
 
       const layerValues = new Map<number, Map<number, ExactNumber>>()
       for (let k = 1; k <= layerBound; k++) {
@@ -1346,7 +1354,7 @@ export async function solveLPS(
           const layerMap = layerValues.get(layer)
           if (layerMap) {
             layerMap.set(stateIndex, value)
-            console.log(`LPS Solver: Set layer ${layer}, state ${stateIndex} = ${exactToString(value)}`)
+            debugLog(`LPS Solver: Set layer ${layer}, state ${stateIndex} = ${exactToString(value)}`)
           }
         }
       }
@@ -1367,32 +1375,33 @@ export async function solveLPS(
 
       const assignment = deriveLayerAssignmentFromValues(events, layerValues, layerBound)
 
-      console.log(`LPS Solver: Final layer values:`)
+      debugLog(`LPS Solver: Final layer values:`)
       for (let k = 1; k <= layerBound; k++) {
         const layerMap = layerValues.get(k)!
         const entries = Array.from(layerMap.entries()).map(([s, v]) => `state${s}=${exactToString(v)}`).join(', ')
-        console.log(`  Layer ${k}: ${entries}`)
+        debugLog(`  Layer ${k}: ${entries}`)
       }
 
-      console.log(`LPS Solver: Derived layer assignment for conditioning events:`)
+      debugLog(`LPS Solver: Derived layer assignment for conditioning events:`)
       for (const [key, layer] of assignment.entries()) {
-        console.log(`  ${key} -> layer ${layer}`)
+        debugLog(`  ${key} -> layer ${layer}`)
       }
 
       const model = buildLPSModelFromResult(tt, assignment, layerValues, layerBound, realVarValues)
 
-      console.log(`LPS Solver: ${testedLayerBounds} stratified layer bound(s) tested`)
+      debugLog(`LPS Solver: ${testedLayerBounds} stratified layer bound(s) tested`)
       return { status: 'sat', model }
     } else if (result.status === 'cancelled') {
       return { status: 'error', message: 'Cancelled' }
     } else if (result.status === 'exception') {
       console.error(`LPS Solver: Z3 exception: ${result.message}`)
+      return { status: 'error', message: result.message }
     } else if (result.status === 'unknown') {
       return { status: 'unknown' }
     }
   }
 
-  console.log(`LPS Solver: ${testedLayerBounds} stratified layer bound(s) tested - UNSAT`)
+  debugLog(`LPS Solver: ${testedLayerBounds} stratified layer bound(s) tested - UNSAT`)
 
   return { status: 'unsat' }
 }

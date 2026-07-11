@@ -191,6 +191,40 @@ test('parse from batch input', async ({ page }) => {
   }
 })
 
+test('editing a parsed constraint immediately disables stale solving', async ({ page }) => {
+  await to_load(page)
+  const ids = TestId.generic_multi_input('constraints')
+  await set_block_input(page, ids, ['Pr(A | true) = 1'])
+  const findButton = page.getByTestId(TestId.find_model)
+  await expect(findButton).toBeEnabled()
+
+  const first = page.getByTestId(ids.split.single.get(0))
+  await first.getByTestId(ids.split.input).fill('Pr(A | true) =')
+  await expect(findButton).toBeDisabled()
+})
+
+test('empty timeout input restores a valid default', async ({ page }) => {
+  await to_load(page)
+  const seconds = page.getByTestId(TestId.timeout.id).getByTestId(TestId.timeout.seconds)
+  await seconds.fill('')
+  await seconds.press('Tab')
+  await expect(seconds).toHaveValue('60')
+
+  const ids = TestId.generic_multi_input('constraints')
+  await set_block_input(page, ids, ['Pr(A | true) = 1'])
+  await find_model(page, 'sat')
+})
+
+test('oversized truth tables fail cleanly', async ({ page }) => {
+  await to_load(page)
+  const ids = TestId.generic_multi_input('constraints')
+  await set_block_input(page, ids, [
+    'Pr(A & B & C & D & E & F & G & H & I & J & K & L & M | true) = 1',
+  ])
+  await page.getByTestId(TestId.find_model).click()
+  await expect(page.getByTestId(TestId.state_display_id)).toContainText('at most 12 distinct sentence letters')
+})
+
 test('zero-atom arithmetic model hides table and evaluator UI', async ({ page }) => {
   await to_load(page)
 

@@ -11,7 +11,7 @@ type Sentence =
 export type SentenceMap = UnionToTagMap<'tag', Sentence>
 
 type RealExpr =
-  | { tag: 'literal', value: number }
+  | { tag: 'literal', value: number, source?: string }
   | { tag: 'variable', id: string }
   | { tag: 'state_variable_sum', indices: number[] }
   | { tag: 'given_probability', arg: Sentence, given: Sentence }

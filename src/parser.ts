@@ -1,9 +1,9 @@
 import P from 'parsimmon'
-import { BINARY_LEFT, BINARY_RIGHT, make_parser, operators, PREFIX } from "./parsimmon_expr"
+import { BINARY_LEFT, make_parser, operators, PREFIX } from "./parsimmon_expr"
 import { clause, default_clause, match_s, S, spv } from "./s"
 import { sentence_builder, real_expr_builder, constraint_builder, possible_constraint_connectives, possible_sentence_connectives } from './pr_sat'
 import { assert_result, Res } from './utils'
-import { ConstraintOrRealExpr, PrSat } from './types'
+import { ConstraintOrRealExpr, PrSat, RealExprMap } from './types'
 
 type Sentence = PrSat['Sentence']
 type RealExpr = PrSat['RealExpr']
@@ -11,7 +11,7 @@ type Constraint = PrSat['Constraint']
 
 const { val, letter, not, and, or, imp, iff } = sentence_builder
 const { lit, neg, power, multiply, divide, plus, minus, cpr, vbl } = real_expr_builder
-const { eq, neq, lt, lte, gt, gte, cnot } = constraint_builder
+const { eq, neq, lt, lte, gt, gte, cnot, cand, cor, cimp, ciff } = constraint_builder
 
 const finish_real_expr_parse = (s: S): RealExpr => {
   const a = spv('a')
@@ -47,37 +47,66 @@ const finish_real_expr_parse = (s: S): RealExpr => {
 }
 
 const ctag_to_c_parser = (ctag: Constraint['tag']): P.Parser<any> => {
-  const connectives = possible_constraint_connectives[ctag]
+  const connectives = [...possible_constraint_connectives[ctag]].sort((a, b) => b.length - a.length)
   if (connectives.length === 1) {
-    return P.string(connectives[0])
+    return P.string(connectives[0]).trim(P.optWhitespace)
   } else {
-    return P.alt(...connectives.map((c) => P.string(c)))
+    return P.alt(...connectives.map((c) => P.string(c))).trim(P.optWhitespace)
   }
 }
 
 const stag_to_c_parser = (stag: Sentence['tag']): P.Parser<any> => {
-  const connectives = possible_sentence_connectives[stag]
+  const connectives = [...possible_sentence_connectives[stag]].sort((a, b) => b.length - a.length)
   if (connectives.length === 1) {
-    return P.string(connectives[0])
+    return P.string(connectives[0]).trim(P.optWhitespace)
   } else {
-    return P.alt(...connectives.map((c) => P.string(c)))
+    return P.alt(...connectives.map((c) => P.string(c))).trim(P.optWhitespace)
   }
 }
 
+const right_assoc_binary = <T>(factor: P.Parser<T>, op: P.Parser<(left: T, right: T) => T>): P.Parser<T> => {
+  let parser: P.Parser<T>
+  parser = P.lazy(() => P.seqMap(
+    factor,
+    P.seq(op, parser).fallback(undefined),
+    (left, rest) => rest === undefined ? left : rest[0](left, rest[1]),
+  ))
+  return parser
+}
+
+const normalize_numeric_literal_source = (source: string): string => {
+  const [integer, decimal] = source.split('.')
+  const normalizedInteger = (integer ?? '0').replace(/^0+(?=\d)/, '') || '0'
+  return decimal === undefined ? normalizedInteger : `${normalizedInteger}.${decimal}`
+}
+
+const parse_numeric_literal = (source: string): RealExprMap['literal'] => {
+  const normalized = normalize_numeric_literal_source(source)
+  const value = Number(normalized)
+  const shouldKeepSource = !Number.isFinite(value) || value.toString() !== normalized ||
+    (Number.isInteger(value) && !Number.isSafeInteger(value))
+  return lit(value, shouldKeepSource ? normalized : undefined)
+}
+
+// Exponentiation is right-associative, and its right operand may begin with
+// unary minus (for example, 2^-3), without changing the conventional parsing
+// of -2^2 as -(2^2).
+const exponentiation = (operator: P.Parser<any>, next: P.Parser<any>): P.Parser<any> => {
+  const negate = operators({ Negate: '-' })
+  let powerParser: P.Parser<any>
+  let signedExponent: P.Parser<any>
+  signedExponent = P.lazy(() => P.seq(negate, signedExponent).or(powerParser))
+  powerParser = P.lazy(() => next.chain((left) =>
+    P.seq(operator, signedExponent).map(([op, right]) => [op, left, right]).or(P.of(left))))
+  return powerParser
+}
+
 const ConstraintLang = P.createLanguage({
-  Constraint: (r) => P.alt(
-    // r.Equal,
-    // r.NotEqual,
-    // r.LessThan,
-    // r.GreaterThan,
-    // r.LessThanOrEqual,
-    // r.GreaterThanOrEqual,
-    r.CAnd,
-    r.COr,
-    r.CImp,
-    r.CIff,
-    r.ConstraintFactor,
-  ),
+  Constraint: (r) => r.CIff,
+  CIff: (r) => right_assoc_binary(r.CImp, ctag_to_c_parser('biconditional').result(ciff)),
+  CImp: (r) => right_assoc_binary(r.COr, ctag_to_c_parser('conditional').result(cimp)),
+  COr: (r) => right_assoc_binary(r.CAnd, ctag_to_c_parser('disjunction').result(cor)),
+  CAnd: (r) => right_assoc_binary(r.ConstraintFactor, ctag_to_c_parser('conjunction').result(cand)),
   ConstraintFactor: (r) => P.alt(
     r.Equal,
     r.NotEqual,
@@ -102,18 +131,6 @@ const ConstraintLang = P.createLanguage({
     .map(([l, r]) => gte(l, r)),
   CNot: (r) => ctag_to_c_parser('negation').then(r.ConstraintFactor)
     .map((inner) => cnot(inner)),
-  CAnd: (r) => r.ConstraintFactor.sepBy(P.optWhitespace.skip(ctag_to_c_parser('conjunction')).skip(P.optWhitespace))
-    .assert((operands) => operands.length >= 2, 'And expects at least 2 operands!')
-    .map((operands) => operands.reduceRight((pv, cv) => and(cv, pv))),
-  COr: (r) => r.ConstraintFactor.sepBy(P.optWhitespace.skip(ctag_to_c_parser('disjunction')).skip(P.optWhitespace))
-    .assert((operands) => operands.length >= 2, 'Or expects at least 2 operands!')
-    .map((operands) => operands.reduceRight((pv, cv) => or(cv, pv))),
-  CImp: (r) => r.ConstraintFactor.sepBy(P.optWhitespace.skip(ctag_to_c_parser('conditional')).skip(P.optWhitespace))
-    .assert((operands) => operands.length >= 2, 'Imp expects at least 2 operands!')
-    .map((operands) => operands.reduceRight((pv, cv) => imp(cv, pv))),
-  CIff: (r) => r.ConstraintFactor.sepBy(P.optWhitespace.skip(ctag_to_c_parser('biconditional')).skip(P.optWhitespace))
-    .assert((operands) => operands.length >= 2, 'Imp expects at least 2 operands!')
-    .map((operands) => operands.reduceRight((pv, cv) => iff(cv, pv))),
   
   ProbabilityLead: () => P.alt(P.string('Pr('), P.string('P('), P.string('p(')),
 
@@ -123,21 +140,25 @@ const ConstraintLang = P.createLanguage({
       .map(([_lp, _lw, s, _mlw, _sep, _mrw, r]) => cpr(s, r)),
     r.ProbabilityLead.then(P.optWhitespace).then(r.Sentence).skip(P.optWhitespace).skip(P.string(')'))
       .chain(() => P.fail('Popper probability requires a conditioning event. Write Pr(A | t) instead of Pr(A)')),
-    P.regexp(/[0-9]+(\.[0-9]+)?/).map((n) => parseFloat(n)),
+    P.regexp(/[0-9]+(\.[0-9]+)?/).map(parse_numeric_literal),
     P.regexp(/[A-Za-z]+/).map((n) => vbl(n)),
     // P.regexp(/[0-9]+/).map((n) => parseInt(n)),
   ),
   PreRealExpr: (r) => make_parser(
     r.RealExprBase,
     [
-      { type: BINARY_RIGHT, ops: operators({ Exponentiate: '^' }) },
+      { type: exponentiation, ops: operators({ Exponentiate: '^' }) },
       { type: PREFIX, ops: operators({ Negate: '-' }) },
       { type: BINARY_LEFT, ops: operators({ Multiply: '*', Divide: '/' }) },
       { type: BINARY_LEFT, ops: operators({ Add: '+', Subtract: '-' }) },
     ]),
   RealExpr: (r) => r.PreRealExpr.map(finish_real_expr_parse),
 
-  Sentence: (r) => P.alt(r.And, r.Or, r.Imp, r.Iff, r.SentenceFactor),
+  Sentence: (r) => r.SIff,
+  SIff: (r) => right_assoc_binary(r.SImp, stag_to_c_parser('biconditional').result(iff)),
+  SImp: (r) => right_assoc_binary(r.SOr, stag_to_c_parser('conditional').result(imp)),
+  SOr: (r) => right_assoc_binary(r.SAnd, stag_to_c_parser('disjunction').result(or)),
+  SAnd: (r) => right_assoc_binary(r.SentenceFactor, stag_to_c_parser('conjunction').result(and)),
   SentenceFactor: (r) => P.alt(
     r.Not,
     r.WrappedSentence,
@@ -149,18 +170,6 @@ const ConstraintLang = P.createLanguage({
     .map(([_l, _lp, s, _rp, _r]) => s),
   SL: () => P.seq(P.regexp(/[A-Z]/), P.regexp(/([1-9][0-9]*)?/)).map(([id, index]) => letter(id, index.length > 0 ? parseInt(index) : 0)),
   Not: (r) => P.seq(stag_to_c_parser('negation'), P.optWhitespace, r.SentenceFactor).map(([_1, _2, s]) => not(s)),
-  And: (r) => r.SentenceFactor.sepBy(P.seq(P.optWhitespace, stag_to_c_parser('conjunction'), P.optWhitespace))
-    .assert((operands) => operands.length >= 2, 'And expects at least two operands!')
-    .map((operands) => operands.reduceRight((pv, cv) => and(cv, pv))),
-  Or: (r) => r.SentenceFactor.sepBy(P.seq(P.optWhitespace, stag_to_c_parser('disjunction'), P.optWhitespace))
-    .assert((operands) => operands.length >= 2, 'Or expects at least two operands!')
-    .map((operands) => operands.reduceRight((pv, cv) => or(cv, pv))),
-  Imp: (r) => r.SentenceFactor.sepBy(P.seq(P.optWhitespace, stag_to_c_parser('conditional'), P.optWhitespace))
-    .assert((operands) => operands.length >= 2, 'Imp expects at least two operands!')
-    .map((operands) => operands.reduceRight((pv, cv) => imp(cv, pv))),
-  Iff: (r) => r.SentenceFactor.sepBy(P.seq(P.optWhitespace, stag_to_c_parser('biconditional'), P.optWhitespace))
-    .assert((operands) => operands.length >= 2, 'Iff expects at least two operands!')
-    .map((operands) => operands.reduceRight((pv, cv) => iff(cv, pv))),
 })
 
 const parse_error_to_string = (error: P.Failure): string => {

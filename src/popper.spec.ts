@@ -10,10 +10,13 @@ import { describe, expect, test, beforeAll } from 'vitest'
 import { constraint_builder, real_expr_builder, sentence_builder, TruthTable, variables_in_constraints } from './pr_sat'
 import { init_z3, WrappedSolver } from './z3_integration'
 import { solveLPS, lpsModelToPopperModel } from './lps_solver'
+import { assert_parse_constraint } from './parser'
 import {
+  createStubPopperModel,
   sentenceToProposition,
   evaluateRealExpr,
   evaluateConstraint,
+  evaluateWithPopperModelExact,
   entails,
   mutuallyExclusive,
   conjoin
@@ -306,6 +309,34 @@ describe('LPS Solver', () => {
 
     expect(result.status).toBe('sat')
   }, 30000)
+
+  test('preserves exact large integer literals through the solver', async () => {
+    const constraints = [
+      assert_parse_constraint('x = 9007199254740993'),
+      assert_parse_constraint('x != 9007199254740992'),
+    ]
+    const tt = new TruthTable(variables_in_constraints(constraints))
+    expect((await solveLPS(solver, tt, constraints)).status).toBe('sat')
+  }, 30000)
+
+  test('reports solver exceptions instead of converting them to UNSAT', async () => {
+    const constraints = [eq(vbl('x'), lit(1))]
+    const tt = new TruthTable(variables_in_constraints(constraints))
+    const failingSolver = {
+      solve: async () => ({ status: 'exception' as const, message: 'synthetic solver failure' })
+    } as unknown as WrappedSolver
+    expect(await solveLPS(failingSolver, tt, constraints)).toEqual({
+      status: 'error', message: 'synthetic solver failure'
+    })
+  })
+
+  test('rejects exponent magnitudes that could exhaust the browser', async () => {
+    const constraints = [eq(power(lit(2), lit(1025)), lit(1))]
+    const tt = new TruthTable(variables_in_constraints(constraints))
+    const result = await solveLPS(solver, tt, constraints)
+    expect(result.status).toBe('error')
+    if (result.status === 'error') expect(result.message).toContain('at most 1024')
+  })
 })
 
 describe('Popper model evaluation', () => {
@@ -388,6 +419,13 @@ describe('Popper model evaluation', () => {
 })
 
 describe('evaluateWithPopperModel', () => {
+  test('compares exact decimal expressions without floating-point drift', () => {
+    const constraint = assert_parse_constraint('0.1 + 0.2 = 0.3')
+    const tt = new TruthTable(variables_in_constraints([constraint]))
+    expect(evaluateWithPopperModelExact(tt, createStubPopperModel(tt), {
+      tag: 'constraint', constraint
+    })).toBe(true)
+  })
   test('evaluates simple probability', async () => {
     const constraints: Constraint[] = [
       eq(pr(A), lit(0.5))

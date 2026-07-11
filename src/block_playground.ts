@@ -13,7 +13,7 @@ import './style.css'
 
 export type InputBlock = {
   element: HTMLElement
-  set_fields: (fields: string[]) => void
+  set_fields: (fields: string[]) => Promise<void>
   set_disabled: (disabled: boolean) => void
 }
 
@@ -138,6 +138,7 @@ export const split_input = <ParseOutput extends {}>(
   }
 
   logic.on_state_change(async (state) => {
+    const stateAtStart = logic.get_output()
     output_container.innerHTML = ''
     output_container.style.display = 'none'
     error_info_container.innerHTML = ''
@@ -149,6 +150,7 @@ export const split_input = <ParseOutput extends {}>(
       // Some kind of queuing system to wrap z3 is necessary.
       // LAME.
       const output_element = await call_display_func(display, state.output)
+      if (logic.get_output() !== stateAtStart) return
       output_container.appendChild(output_element)
       output_container.style.display = 'inline'
       info_button.value = INFO_MESSAGE_OKAY
@@ -160,6 +162,8 @@ export const split_input = <ParseOutput extends {}>(
     } else if (state.tag === 'nothing') {
       info_button.value = INFO_MESSAGE_EMPTY
       info_button.classList.remove('error')
+    } else if (state.tag === 'pending') {
+      // Keep the previous rendering while immediately invalidating the parsed value.
     } else {
       fallthrough('split_input.logic.on_state_change', state)
     }
@@ -168,7 +172,12 @@ export const split_input = <ParseOutput extends {}>(
   })
 
   textbox.addEventListener('input', debounce(DEFAULT_DEBOUNCE_MS, {
-    lead: () => output_container.classList.add('updating'),
+    lead: () => {
+      output_container.classList.add('updating')
+      void logic.mark_pending().catch((e) => {
+        throw new Error(`Unable to invalidate pending input! ${e.message}`)
+      })
+    },
     trail: () => {
       output_container.classList.remove('updating')
       logic.text.set(textbox.value)
@@ -256,7 +265,7 @@ const split_input_block = <ParseOutput extends {}>(
 
   return {
     element: parent,
-    set_fields: (fields) => block_logic.set_fields(fields),
+    set_fields: async (fields) => await block_logic.set_fields(fields),
     set_disabled: (disabled: boolean) => {
       set_disabled_for_all_children(parent, disabled)
     },
@@ -268,6 +277,8 @@ const set_disabled_for_all_children = (e: HTMLElement, disabled: boolean) => {
   for (const e of inputs) {
     e.disabled = disabled
   }
+  const textareas = e.getElementsByTagName('textarea')
+  for (const textarea of textareas) textarea.disabled = disabled
 }
 
 const batch_input_block = <ParseOutput extends {}>(
@@ -303,8 +314,10 @@ const batch_input_block = <ParseOutput extends {}>(
   )
   return {
     element,
-    set_fields: (fields) => {
-      batch_logic.text.set(fields.join('\n'))
+    set_fields: async (fields) => {
+      const text = fields.join('\n')
+      await batch_logic.text.set(text)
+      textbox.value = text
     },
     set_disabled: (disabled) => {
       set_disabled_for_all_children(element, disabled)
@@ -372,11 +385,15 @@ export const generic_input_block = <ParseOutput extends {}>(
   }
 
   file_loader.onchange = async () => {
-    const files = assert_exists(file_loader.files, 'file_loader.files is null!')
-    assert(files.length === 1, `Number of files in file_loader != 1!\nactually: ${files.length}`)
-    const f = assert_exists(files[0], 'files[0] is null!')
-    batch_logic.text.set(await f.text())
-    await batch_logic.send()
+    try {
+      const files = assert_exists(file_loader.files, 'file_loader.files is null!')
+      assert(files.length === 1, `Number of files in file_loader != 1!\nactually: ${files.length}`)
+      const f = assert_exists(files[0], 'files[0] is null!')
+      await batch_logic.text.set(await f.text())
+      await batch_logic.send()
+    } finally {
+      file_loader.value = ''
+    }
   }
 
   const element = tel(test_ids.id, 'div', { class: 'generic-input-block' },
@@ -395,9 +412,9 @@ export const generic_input_block = <ParseOutput extends {}>(
   )
   return {
     element,
-    set_fields: (fields) => {
-      batch_block.set_fields(fields)
-      split_block.set_fields(fields)
+    set_fields: async (fields) => {
+      await batch_block.set_fields(fields)
+      await split_block.set_fields(fields)
     },
     set_disabled: (disabled) => {
       set_disabled_for_all_children(element, disabled)

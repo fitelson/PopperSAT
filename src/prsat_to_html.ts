@@ -1,5 +1,5 @@
 import { math_el } from "./el"
-import { letter_string, possible_constraint_connectives, possible_sentence_connectives } from "./pr_sat"
+import { letter_string, literal_to_string, possible_constraint_connectives, possible_sentence_connectives } from "./pr_sat"
 import { PrSat } from "./types"
 import { assert_exists } from "./utils"
 
@@ -69,7 +69,7 @@ export const real_expr_to_html = (expr: RealExpr, wrap_in_math_element: boolean)
   const s2h = sentence_to_html
   const sub = (expr: RealExpr): MathMLElement => {
     if (expr.tag === 'literal') {
-      return math_el('mi', {}, expr.value.toString())
+      return math_el('mi', {}, literal_to_string(expr))
     } else if (expr.tag === 'variable') {
       return math_el('mi', {}, expr.id)
     } else if (expr.tag === 'given_probability') {
@@ -96,7 +96,7 @@ export const real_expr_to_html = (expr: RealExpr, wrap_in_math_element: boolean)
       const op = math_el('mo', {}, '-')
       return math_el('mrow', {}, op, wrap(expr.expr, ['literal', 'given_probability', 'variable']))
     } else if (expr.tag === 'power') {
-      return math_el('msup', {}, wrap(expr.base, ['literal', 'given_probability', 'negative', 'variable']), sub(expr.exponent))
+      return math_el('msup', {}, wrap(expr.base, ['literal', 'given_probability', 'variable']), sub(expr.exponent))
     } else if (expr.tag === 'plus') {
       const op = math_el('mo', {}, '+')
       return math_el('mrow', {}, wrap(expr.left, ['literal', 'variable', 'given_probability', 'negative', 'plus', 'minus', 'multiply', 'divide', 'power']), op, wrap(expr.right, ['variable', 'literal', 'given_probability', 'negative', 'multiply', 'divide', 'power']))

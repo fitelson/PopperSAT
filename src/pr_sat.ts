@@ -21,9 +21,9 @@ const { letter, val, not, and } = sentence_builder
 // const { letter, value: val, negation: not, conjunction: and } = PrSatFuncs.inits.Sentence
 
 export const real_expr_builder = {
-  lit: (value: number): RealExprMap['literal'] => {
+  lit: (value: number, source?: string): RealExprMap['literal'] => {
     assert(value >= 0, `RealExpr literal initialized with a negative value '${value}'!`)
-    return ({ tag: 'literal', value })
+    return ({ tag: 'literal', value, ...(source === undefined ? {} : { source }) })
   },
   vbl: (id: string): RealExprMap['variable'] => ({ tag: 'variable', id }),
   svs: (indices: number[]): RealExprMap['state_variable_sum'] => ({ tag: 'state_variable_sum', indices }),
@@ -36,6 +36,9 @@ export const real_expr_builder = {
   power: (base: RealExpr, exponent: RealExpr): RealExprMap['power'] => ({ tag: 'power', base, exponent }),
 }
 const { svs, lit, minus, plus, cpr } = real_expr_builder
+
+export const literal_to_string = (literal: RealExprMap['literal']): string =>
+  literal.source ?? literal.value.toString()
 // const { state_variable_sum: svs, literal: lit } = PrSatFuncs.inits.RealExpr
 
 export const constraint_builder = {
@@ -107,6 +110,10 @@ export class LetterSet {
   }
 }
 
+export const MAX_TRUTH_TABLE_STATES = 4096
+export const MAX_TRUTH_TABLE_LETTERS = 12
+export const MAX_ABS_SOLVER_EXPONENT = 1024
+
 export class TruthTable {
   private readonly letter_ids: SentenceMap['letter'][]
   // private readonly state_table: { assignment: Record<string, boolean>, state: Sentence }[]
@@ -117,6 +124,9 @@ export class TruthTable {
 
   constructor(readonly variables: Readonly<VariableLists>) {
     this.letter_ids = [...new LetterSet(variables.sentence)].sort(comp_letters)
+    if (this.letter_ids.length > MAX_TRUTH_TABLE_LETTERS) {
+      throw new Error(`PopperSAT supports at most ${MAX_TRUTH_TABLE_LETTERS} distinct sentence letters (${MAX_TRUTH_TABLE_STATES} states); received ${this.letter_ids.length}.`)
+    }
     this.state_table = TruthTable.enumerate_states(this.letter_ids)
   }
 
@@ -631,7 +641,7 @@ const real_expr_to_gen_string = (expr: RealExpr, s2s: (s: Sentence) => string): 
   }
 
   if (expr.tag === 'literal') {
-    return expr.value.toString()
+    return literal_to_string(expr)
   } else if (expr.tag === 'variable') {
     return expr.id
   } else if (expr.tag === 'given_probability') {
@@ -945,7 +955,7 @@ const translate_constraints_to_smtlib = (tt: TruthTable, index_to_eliminate: num
   const smtlib_lines: S[] = []
   smtlib_lines.push(['set-logic', 'QF_NRA'])
 
-  for (const rv of tt.variables.real.entries()) {
+  for (const rv of new Set(tt.variables.real)) {
     const declaration = ['declare-const', rv, 'Real']
     smtlib_lines.push(declaration)
   }
@@ -1260,8 +1270,8 @@ export const real_expr_to_smtlib = (expr: RealExpr): S => {
   }
 
   const integer_literal = (e: RealExpr): number | undefined => {
-    if (e.tag === 'literal' && Number.isInteger(e.value)) return e.value
-    if (e.tag === 'negative' && e.expr.tag === 'literal' && Number.isInteger(e.expr.value)) return -e.expr.value
+    if (e.tag === 'literal' && Number.isSafeInteger(e.value)) return e.value
+    if (e.tag === 'negative' && e.expr.tag === 'literal' && Number.isSafeInteger(e.expr.value)) return -e.expr.value
     return undefined
   }
 
@@ -1272,7 +1282,7 @@ export const real_expr_to_smtlib = (expr: RealExpr): S => {
   }
 
   if (expr.tag === 'literal') {
-    return expr.value.toString()
+    return literal_to_string(expr)
   } else if (expr.tag === 'variable') {
     return expr.id
   } else if (expr.tag === 'negative') {
@@ -1282,10 +1292,14 @@ export const real_expr_to_smtlib = (expr: RealExpr): S => {
     throw new Error('Unable to convert a given_probability to an SMTLIB S-expression!  Did you forget to call translate_*?')
   } else if (expr.tag === 'power') {
     const exponent = integer_literal(expr.exponent)
-    if (exponent === undefined || exponent < 0) {
-      throw new Error('Only non-negative integer exponents can be converted to SMTLIB')
+    if (exponent === undefined) {
+      throw new Error('Only integer literal exponents can be converted to SMTLIB')
     }
-    return pow_smtlib(real_expr_to_smtlib(expr.base), exponent)
+    if (Math.abs(exponent) > MAX_ABS_SOLVER_EXPONENT) {
+      throw new Error(`Exponent magnitude must be at most ${MAX_ABS_SOLVER_EXPONENT}; received ${exponent}.`)
+    }
+    const base = real_expr_to_smtlib(expr.base)
+    return exponent < 0 ? ['/', '1', pow_smtlib(base, -exponent)] : pow_smtlib(base, exponent)
   } else if (expr.tag === 'state_variable_sum') {
     if (expr.indices.length === 0) {
       return '0'

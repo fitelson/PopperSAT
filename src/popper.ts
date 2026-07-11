@@ -10,7 +10,8 @@ import { TruthTable, sentence_builder } from "./pr_sat"
 import { PrSat, SentenceMap } from "./types"
 import {
   ExactNumber, exactAdd, exactSub, exactMul, exactDiv, exactNeg, exactPow,
-  exactFromRational, rationalFromInt, exactIsZero, exactToFloat, EXACT_ONE
+  exactCompare, exactFromRational, rationalFromDecimalString,
+  exactIsZero, exactToFloat, EXACT_ONE
 } from "./z3_integration"
 
 type Sentence = PrSat['Sentence']
@@ -465,21 +466,10 @@ export function evaluateRealExprExact(
 
   switch (expr.tag) {
     case 'literal':
-      // Convert literal to exact rational if it's a simple fraction
-      const val = expr.value
-      if (Number.isInteger(val)) {
-        return exactFromRational(rationalFromInt(BigInt(val)))
-      }
-      // Try to convert decimal to rational
-      const str = val.toString()
-      const decimalIndex = str.indexOf('.')
-      if (decimalIndex !== -1) {
-        const decimals = str.length - decimalIndex - 1
-        const denom = BigInt(10 ** decimals)
-        const numer = BigInt(Math.round(val * Number(denom)))
-        return exactFromRational({ numer, denom })
-      }
-      return { tag: 'float', value: val }
+      const rationalLiteral = rationalFromDecimalString(expr.source ?? expr.value.toString())
+      return rationalLiteral === undefined
+        ? { tag: 'float', value: expr.value }
+        : exactFromRational(rationalLiteral)
 
     case 'variable':
       if (model.realVarValues?.has(expr.id)) {
@@ -538,6 +528,32 @@ export function evaluateRealExprExact(
   }
 }
 
+/** Evaluate a constraint with exact arithmetic wherever the model permits it. */
+export function evaluateConstraintExact(
+  tt: TruthTable,
+  model: PopperModel,
+  constraint: Constraint
+): boolean {
+  const evalReal = (expr: RealExpr): ExactNumber => evaluateRealExprExact(tt, model, expr)
+  const evalConstraint = (inner: Constraint): boolean => evaluateConstraintExact(tt, model, inner)
+  const compare = (left: RealExpr, right: RealExpr): -1 | 0 | 1 => exactCompare(evalReal(left), evalReal(right))
+
+  switch (constraint.tag) {
+    case 'equal': return compare(constraint.left, constraint.right) === 0
+    case 'not_equal': return compare(constraint.left, constraint.right) !== 0
+    case 'less_than': return compare(constraint.left, constraint.right) < 0
+    case 'less_than_or_equal': return compare(constraint.left, constraint.right) <= 0
+    case 'greater_than': return compare(constraint.left, constraint.right) > 0
+    case 'greater_than_or_equal': return compare(constraint.left, constraint.right) >= 0
+    case 'negation': return !evalConstraint(constraint.constraint)
+    case 'conjunction': return evalConstraint(constraint.left) && evalConstraint(constraint.right)
+    case 'disjunction': return evalConstraint(constraint.left) || evalConstraint(constraint.right)
+    case 'conditional': return !evalConstraint(constraint.left) || evalConstraint(constraint.right)
+    case 'biconditional': return evalConstraint(constraint.left) === evalConstraint(constraint.right)
+    default: throw new Error(`Unknown Constraint tag: ${(constraint as Constraint).tag}`)
+  }
+}
+
 /**
  * Evaluate a ConstraintOrRealExpr using a Popper model, returning exact values.
  * Returns either a boolean (for constraints) or an ExactNumber (for real expressions).
@@ -548,7 +564,7 @@ export function evaluateWithPopperModelExact(
   expr: ConstraintOrRealExpr
 ): boolean | ExactNumber {
   if (expr.tag === 'constraint') {
-    return evaluateConstraint(tt, model, expr.constraint)
+    return evaluateConstraintExact(tt, model, expr.constraint)
   } else {
     return evaluateRealExprExact(tt, model, expr.real_expr)
   }

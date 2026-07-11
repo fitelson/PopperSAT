@@ -1,7 +1,18 @@
 import { describe, test, expect } from 'vitest'
-import { ModelAssignmentOutput, parse_to_assignment, poly_s, run_solve_cancel_logic } from './z3_integration'
+import { exactCompare, exactFromRational, exactFromSurd, ModelAssignmentOutput, parse_to_assignment, poly_s, rationalFromDecimalString, rationalFromInt, run_solve_cancel_logic, surd } from './z3_integration'
 import { S } from './s'
 import { sleep } from './utils'
+
+describe('exact arithmetic', () => {
+  test('parses large decimal integers without precision loss', () => {
+    expect(rationalFromDecimalString('9007199254740993')).toEqual({ numer: 9007199254740993n, denom: 1n })
+  })
+  test('compares quadratic surds exactly', () => {
+    const sqrt2 = exactFromSurd(surd(rationalFromInt(0), rationalFromInt(1), 2n))
+    expect(exactCompare(sqrt2, exactFromRational(rationalFromInt(1)))).toBe(1)
+    expect(exactCompare(sqrt2, exactFromRational(rationalFromInt(2)))).toBe(-1)
+  })
+})
 
 describe('parse_to_assignment', () => {
   describe('negative', () => {
@@ -195,6 +206,24 @@ describe('WrappedSolver', () => {
         fudge_ms: 20,
         ignore_abort: true,
       }, 'slow-cancelled')
+    })
+
+    test('cancel timeout includes cancellation cleanup', async () => {
+      const ac = new AbortController()
+      const start = performance.now()
+      const resultPromise = run_solve_cancel_logic(
+        async () => await new Promise<R>(() => {}),
+        async () => {
+          await sleep(200)
+          return 'cancelled'
+        },
+        async () => 'slow-cancelled',
+        20,
+        ac.signal,
+      )
+      ac.abort()
+      expect(await resultPromise).toEqual('slow-cancelled')
+      expect(performance.now() - start).toBeLessThan(100)
     })
   })
 })

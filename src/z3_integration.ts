@@ -1,19 +1,21 @@
 import { Arith, Bool, Context, Expr, init, Model, Z3HighLevel, Z3LowLevel } from "z3-solver"
 import { match_s, S, spv, clause, s_to_string, default_clause } from "./s"
-import { constraints_to_smtlib_lines, eliminate_state_variable_index, enrich_constraints, parse_s, real_expr_to_smtlib, translate, TruthTable, variables_in_constraints, state_index_id, constraint_to_smtlib, translate_constraint, translate_real_expr, free_variables_in_constraint_or_real_expr as free_sentence_variables_in_constraint_or_real_expr, LetterSet, free_real_variables_in_constraint_or_real_expr, VariableLists, div0_conditions_in_constraint_or_real_expr, translate_constraint_or_real_expr, eliminate_state_variable_index_in_constraint_or_real_expr } from "./pr_sat"
+import { constraints_to_smtlib_lines, eliminate_state_variable_index, enrich_constraints, parse_s, real_expr_to_smtlib, translate, TruthTable, variables_in_constraints, state_index_id, constraint_to_smtlib, translate_constraint, translate_real_expr, free_variables_in_constraint_or_real_expr as free_sentence_variables_in_constraint_or_real_expr, LetterSet, free_real_variables_in_constraint_or_real_expr, VariableLists, div0_conditions_in_constraint_or_real_expr, translate_constraint_or_real_expr, eliminate_state_variable_index_in_constraint_or_real_expr, MAX_ABS_SOLVER_EXPONENT } from "./pr_sat"
 import { ConstraintOrRealExpr, PrSat } from "./types"
 import { as_array, assert, assert_exists, assert_result, fallthrough, Res, sleep } from "./utils"
 
 type RealExpr = PrSat['RealExpr']
 type Constraint = PrSat['Constraint']
 
+const debugLog = (..._args: unknown[]): void => { void _args }
+
 export const init_z3 = async (): Promise<Z3HighLevel & Z3LowLevel> => {
-    // console.log('Initializing z3...')
+    // debugLog('Initializing z3...')
     // const init_start = performance.now()
     const z3_interface = await init()
     // const init_end = performance.now()
-    // console.log('done!')
-    // console.log(`init time: ${(init_end - init_start) / 1000} seconds.`)
+    // debugLog('done!')
+    // debugLog(`init time: ${(init_end - init_start) / 1000} seconds.`)
     return z3_interface
 }
 
@@ -49,10 +51,10 @@ export const init_z3 = async (): Promise<Z3HighLevel & Z3LowLevel> => {
 // }
 
 export type ModelAssignmentOutput =
-  | { tag: 'literal', value: number }
+  | { tag: 'literal', value: number, source?: string }
   | { tag: 'negative', inner: ModelAssignmentOutput }
   | { tag: 'rational', numerator: ModelAssignmentOutput, denominator: ModelAssignmentOutput }
-  | { tag: 'surd', a: ModelAssignmentOutput, b: ModelAssignmentOutput, c: number }  // a + b√c
+  | { tag: 'surd', a: ModelAssignmentOutput, b: ModelAssignmentOutput, c: number, cSource?: string }  // a + b√c
   | { tag: 'root-obj', index: number, a: ModelAssignmentOutput, b: ModelAssignmentOutput, c: ModelAssignmentOutput }
   | { tag: 'generic-root-obj', index: number, degree: number, coefficients: number[] }
   | { tag: 'unknown', s: S }
@@ -137,6 +139,7 @@ export type FancyEvaluatorOutput =
 export const fancy_evaluate_constraint_or_real_expr = async <CtxKey extends string>(ctx: Context<CtxKey>, model: Model<CtxKey>, tt: TruthTable, c_or_re: ConstraintOrRealExpr): Promise<FancyEvaluatorOutput> => {
   const free_sentence_vars = free_sentence_variables_in_constraint_or_real_expr(c_or_re, new LetterSet(), new LetterSet([...tt.letters()]))
   const free_real_vars = free_real_variables_in_constraint_or_real_expr(c_or_re, new Set)
+  for (const declared of tt.variables.real) free_real_vars.delete(declared)
 
   if (!free_sentence_vars.is_empty() || free_real_vars.size > 0) {
     return { tag: 'undeclared-vars', variables: { sentence: [...free_sentence_vars], real: [...free_real_vars] } }
@@ -166,7 +169,7 @@ export const fancy_evaluate_constraint_or_real_expr = async <CtxKey extends stri
   }
 
   const output = await expr_to_assignment(ctx, model, to_evaluate_z3)
-  console.log('RESULT', output)
+  debugLog('RESULT', output)
 
   return { tag: 'result', result: output }
 }
@@ -227,16 +230,16 @@ export const model_assignment_output_to_string = (output: ModelAssignmentOutput)
   }
 
   if (output.tag === 'literal') {
-    return output.value.toString()
+    return output.source ?? output.value.toString()
   } else if (output.tag === 'negative') {
     return `-${wrap(output.inner)}`
   } else if (output.tag === 'rational') {
-    return `${wrap(output.numerator)} / ${output.denominator}`
+    return `${wrap(output.numerator)} / ${wrap(output.denominator)}`
   } else if (output.tag === 'surd') {
     // a + b√c
     const aStr = sub(output.a)
     const bStr = sub(output.b)
-    const sqrtStr = `√${output.c}`
+    const sqrtStr = `√${output.cSource ?? output.c}`
     // Check if a is zero
     const aIsZero = output.a.tag === 'literal' && output.a.value === 0
     // Check if b is 1 or -1
@@ -264,7 +267,7 @@ export const model_assignment_output_to_string = (output: ModelAssignmentOutput)
     return `(root-obj ${output.index} (${wrap(output.a)} * x^2 + ${wrap(output.b)} * x + ${wrap(output.c)}))`
   } else if (output.tag === 'generic-root-obj') {
     const terms_str = output.coefficients.map((c, index) => {
-      const exp = output.coefficients.length - index
+      const exp = output.coefficients.length - index - 1
       if (exp === 0) {
         return c
       } else if (exp === 1) {
@@ -467,6 +470,9 @@ export const parse_to_assignment = (s: S): ModelAssignmentOutput => {
             largest_exp = Math.max(largest_exp, exp)
             previous_exp = exp
           }
+          if (previous_exp !== undefined) {
+            for (let expGap = previous_exp - 1; expGap >= 0; expGap--) coefficients.push(0)
+          }
           
           const index_s = assert_exists(t[2], 'missing index!')
           const index = typeof index_s === 'string' ? assert_result(parse_int(index_s))
@@ -483,19 +489,19 @@ export const parse_to_assignment = (s: S): ModelAssignmentOutput => {
 export const model_assignment_output_to_s = (output: ModelAssignmentOutput): S => {
   const sub = (output: ModelAssignmentOutput): S => model_assignment_output_to_s(output)
   if (output.tag === 'literal') {
-    return output.value.toString()
+    return output.source ?? output.value.toString()
   } else if (output.tag === 'negative') {
     return ['-', sub(output.inner)]
   } else if (output.tag === 'rational') {
     return ['/', sub(output.numerator), sub(output.denominator)]
   } else if (output.tag === 'surd') {
     // Represent as (+ a (* b (sqrt c)))
-    return ['+', sub(output.a), ['*', sub(output.b), ['sqrt', output.c.toString()]]]
+    return ['+', sub(output.a), ['*', sub(output.b), ['sqrt', output.cSource ?? output.c.toString()]]]
   } else if (output.tag === 'root-obj') {
-    return ['root-obj', ['+', ['*', sub(output.a), ['^', 'x', '2']], ['*', sub(output.b), 'x'], sub(output.c)], '2']
+    return ['root-obj', ['+', ['*', sub(output.a), ['^', 'x', '2']], ['*', sub(output.b), 'x'], sub(output.c)], output.index.toString()]
   } else if (output.tag === 'generic-root-obj') {
     const terms = output.coefficients.map((c, index) => {
-      const exp = output.coefficients.length - index
+      const exp = output.coefficients.length - index - 1
       if (exp === 0) {
         return c
       } else if (exp === 1) {
@@ -614,6 +620,26 @@ export function rationalFromInt(n: bigint | number): Rational {
   return { numer: BigInt(n), denom: 1n }
 }
 
+/** Parse a finite decimal/scientific numeral into an exact rational. */
+export function rationalFromDecimalString(source: string): Rational | undefined {
+  const match = source.match(/^([+-]?)(\d+)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/)
+  if (!match) return undefined
+
+  const sign = match[1] === '-' ? -1n : 1n
+  const integer = match[2]
+  const fraction = match[3] ?? ''
+  const exponent = Number(match[4] ?? '0')
+  if (!Number.isSafeInteger(exponent)) return undefined
+
+  let numer = sign * BigInt(`${integer}${fraction}`)
+  const scale = fraction.length - exponent
+  if (scale >= 0) {
+    return rational(numer, 10n ** BigInt(scale))
+  }
+  numer *= 10n ** BigInt(-scale)
+  return rational(numer, 1n)
+}
+
 /** The rational number 0 */
 export const RATIONAL_ZERO: Rational = { numer: 0n, denom: 1n }
 
@@ -644,6 +670,12 @@ export function rationalIsZero(r: Rational): boolean {
 /** Check if two rationals are equal */
 export function rationalEquals(a: Rational, b: Rational): boolean {
   return a.numer === b.numer && a.denom === b.denom
+}
+
+/** Compare rationals exactly, returning -1, 0, or 1. */
+export function rationalCompare(a: Rational, b: Rational): -1 | 0 | 1 {
+  const difference = a.numer * b.denom - b.numer * a.denom
+  return difference < 0n ? -1 : difference > 0n ? 1 : 0
 }
 
 /** Convert rational to float */
@@ -913,6 +945,27 @@ export function exactIsSurd(e: ExactNumber): e is { tag: 'surd', value: Quadrati
   return e.tag === 'surd'
 }
 
+function surdSign(value: QuadraticSurd): -1 | 0 | 1 {
+  const zero = RATIONAL_ZERO
+  const aSign = rationalCompare(value.a, zero)
+  const bSign = rationalCompare(value.b, zero)
+  if (bSign === 0 || value.c === 0n) return aSign
+  if (aSign === 0 || aSign === bSign) return bSign
+
+  const aSquared = rationalMul(value.a, value.a)
+  const bSquaredC = rationalMul(rationalMul(value.b, value.b), rationalFromInt(value.c))
+  const magnitudeComparison = rationalCompare(aSquared, bSquaredC)
+  return aSign > 0 ? magnitudeComparison : magnitudeComparison === 0 ? 0 : magnitudeComparison === 1 ? -1 : 1
+}
+
+/** Compare ExactNumbers, staying exact for rationals and compatible quadratic surds. */
+export function exactCompare(a: ExactNumber, b: ExactNumber): -1 | 0 | 1 {
+  const difference = exactSub(a, b)
+  if (difference.tag === 'rational') return rationalCompare(difference.value, RATIONAL_ZERO)
+  if (difference.tag === 'surd') return surdSign(difference.value)
+  return difference.value < 0 ? -1 : difference.value > 0 ? 1 : 0
+}
+
 /** Convert ExactNumber to surd form (rationals become surds with b=0) */
 function exactToSurd(e: ExactNumber): QuadraticSurd | undefined {
   if (e.tag === 'rational') return surdFromRational(e.value)
@@ -980,10 +1033,26 @@ export function exactNeg(a: ExactNumber): ExactNumber {
   return { tag: 'float', value: -a.value }
 }
 
-/** Power - falls back to float since rational^rational is often irrational */
+/** Integer power, matching the solver language and preserving exact arithmetic. */
 export function exactPow(base: ExactNumber, exp: ExactNumber): ExactNumber {
-  // For now, always use float for power operations (could handle integer exponents specially)
-  return { tag: 'float', value: Math.pow(exactToFloat(base), exactToFloat(exp)) }
+  if (exp.tag !== 'rational' || exp.value.denom !== 1n ||
+      exp.value.numer < BigInt(-MAX_ABS_SOLVER_EXPONENT) ||
+      exp.value.numer > BigInt(MAX_ABS_SOLVER_EXPONENT)) {
+    throw new Error(`Exponentiation requires an integer exponent with magnitude at most ${MAX_ABS_SOLVER_EXPONENT}`)
+  }
+
+  let exponent = Number(exp.value.numer)
+  if (exponent < 0 && exactIsZero(base)) throw new Error('Division by zero')
+  const negative = exponent < 0
+  exponent = Math.abs(exponent)
+  let result = EXACT_ONE
+  let factor = base
+  while (exponent > 0) {
+    if (exponent % 2 === 1) result = exactMul(result, factor)
+    exponent = Math.floor(exponent / 2)
+    if (exponent > 0) factor = exactMul(factor, factor)
+  }
+  return negative ? exactDiv(EXACT_ONE, result) : result
 }
 
 /** Format ExactNumber for display - fraction if rational, surd if algebraic, decimal if float */
@@ -1169,7 +1238,7 @@ export const model_to_named_assignments_exact = async <CtxKey extends string>(
     // Try to parse root-obj as exact surd
     const surdResult = parseRootObjAsSurd(sexpr)
     if (surdResult) {
-      console.log(`Z3 returned root-obj for ${name}: ${sexpr} -> ${exactToString(surdResult)}`)
+      debugLog(`Z3 returned root-obj for ${name}: ${sexpr} -> ${exactToString(surdResult)}`)
       assignments[name] = surdResult
       continue
     }
@@ -1184,10 +1253,10 @@ export const model_to_named_assignments_exact = async <CtxKey extends string>(
       try {
         const parsed_s = parse_s(sexpr)
         const evaluatedVal = parse_and_evaluate(parsed_s)
-        console.log(`Z3 returned algebraic expression for ${name}: ${sexpr} -> ${evaluatedVal}`)
+        debugLog(`Z3 returned algebraic expression for ${name}: ${sexpr} -> ${evaluatedVal}`)
         assignments[name] = exactFromFloat(evaluatedVal)
       } catch (e) {
-        console.log(`Z3 returned non-parseable expression for ${name}: ${sexpr}, defaulting to 0`)
+        debugLog(`Z3 returned non-parseable expression for ${name}: ${sexpr}, defaulting to 0`)
         assignments[name] = exactFromFloat(0)  // Default to 0 if we can't parse
       }
     }
@@ -1263,7 +1332,7 @@ export const real_expr_to_arith = <CtxKey extends string>(ctx: Context<CtxKey>, 
   } else if (expr.tag === 'given_probability') {
     throw new Error('Unable to convert conditional probability to a Z3 arith expression!')
   } else if (expr.tag === 'literal') {
-    return ctx.Real.val(expr.value)
+    return ctx.Real.val(expr.source ?? expr.value)
   } else if (expr.tag === 'minus') {
     return ctx.Sub(sub(expr.left), sub(expr.right))
   } else if (expr.tag === 'multiply') {
@@ -1273,7 +1342,21 @@ export const real_expr_to_arith = <CtxKey extends string>(ctx: Context<CtxKey>, 
   } else if (expr.tag === 'plus') {
     return ctx.Sum(sub(expr.left), sub(expr.right))
   } else if (expr.tag === 'power') {
-    throw new Error('Unable to convert exponent to Z3 arith expression (be careful where real_expr_to_arith is called!)')
+    const integerLiteral = (value: RealExpr): number | undefined => {
+      if (value.tag === 'literal' && Number.isSafeInteger(value.value)) return value.value
+      if (value.tag === 'negative' && value.expr.tag === 'literal' && Number.isSafeInteger(value.expr.value)) return -value.expr.value
+      return undefined
+    }
+    const exponent = integerLiteral(expr.exponent)
+    if (exponent === undefined) throw new Error('Model evaluator exponentiation requires an integer literal exponent.')
+    if (Math.abs(exponent) > MAX_ABS_SOLVER_EXPONENT) {
+      throw new Error(`Exponent magnitude must be at most ${MAX_ABS_SOLVER_EXPONENT}; received ${exponent}.`)
+    }
+    const base = sub(expr.base)
+    const product = (count: number): Arith<CtxKey> => count === 0
+      ? ctx.Real.val(1)
+      : ctx.Product(base, ...Array.from({ length: count - 1 }, () => base))
+    return exponent < 0 ? ctx.Div(ctx.Real.val(1), product(-exponent)) : product(exponent)
   } else if (expr.tag === 'state_variable_sum') {
     if (expr.indices.length === 0) {
       return ctx.Real.val(0)
@@ -1283,7 +1366,7 @@ export const real_expr_to_arith = <CtxKey extends string>(ctx: Context<CtxKey>, 
       return ctx.Sum(first_var_expr, ...rest_var_exprs)
     }
   } else if (expr.tag === 'variable') {
-    throw new Error('Unable to convert variable to Z3 arith expression (be careful where real_expr_to_arith is called!)')
+    return ctx.Const(expr.id, ctx.Real.sort())
   } else {
     return fallthrough('real_expr_to_arith', expr)
   }
@@ -1365,7 +1448,7 @@ export const pr_sat_with_options = async <CtxKey extends string>(
     ['define-fun', `s_${index_to_eliminate}`, [], 'Real', real_expr_to_smtlib(redef)],
   ]
   const smtlib_string = smtlib_lines.map((l) => s_to_string(l, false)).join('\n')
-  console.log(smtlib_string)
+  debugLog(smtlib_string)
   solver.fromString(smtlib_string)
   const result = await solver.check()
 
@@ -1531,12 +1614,9 @@ export const run_solve_cancel_logic = async <R>(
   if (result.tag === 'finished') {
     return result.result
   } else if (result.tag === 'cancelled') {
-    const cancel_result = await on_cancel()
+    const cancel_result = on_cancel()
     const result = await Promise.race([
-      // If we're at this point, just assume that the run finishes BECAUSE it was cancelled.
-      // Ignore the result, though, as it's (best-case) garbage.
-      run.then(() => ({ tag: 'finished' as const, result: cancel_result })),
-      // on_cancel().then((r) => ({ tag: 'finished' as const, result: r })),
+      Promise.all([run, cancel_result]).then(([, r]) => ({ tag: 'finished' as const, result: r })),
       sleep(cancel_timeout_ms).then(() => ({ tag: 'cancelled' as const })),
     ])
 
@@ -1553,14 +1633,27 @@ export const run_solve_cancel_logic = async <R>(
 }
 
 export class WrappedSolver {
+  private reinitialize_in_flight: Promise<void> | undefined
+
   constructor(private z3_interface: (Z3HighLevel & Z3LowLevel) | undefined, private readonly init: () => Promise<(Z3HighLevel & Z3LowLevel) | undefined>) {
   }
 
   private async reinitialize(): Promise<void> {
-    const old = this.z3_interface
+    if (this.reinitialize_in_flight !== undefined) {
+      return await this.reinitialize_in_flight
+    }
 
-    this.z3_interface = await this.init()
-    console.log('reinitialized?', old !== this.z3_interface)
+    const pending = (async () => {
+      const old = this.z3_interface
+      this.z3_interface = await this.init()
+      debugLog('reinitialized?', old !== this.z3_interface)
+    })()
+    this.reinitialize_in_flight = pending
+    try {
+      await pending
+    } finally {
+      if (this.reinitialize_in_flight === pending) this.reinitialize_in_flight = undefined
+    }
   }
 
   // async solve(smtlib_lines: S[], abort_signal?: AbortSignal, cancel_fallback?: () => Promise<undefined>): Promise<WrappedSolverResult> {
@@ -1631,9 +1724,11 @@ export class WrappedSolver {
         return { status: 'cancelled' }
       },
       async () => {  // on_slow_cancel
-        console.log('attempting slow cancel...')
+        debugLog('attempting slow cancel...')
         await cancel_fallback?.()
-        await this.reinitialize()
+        void this.reinitialize().catch((error) => {
+          console.error('Z3 reinitialization failed after cancellation', error)
+        })
         return { status: 'cancelled' }
       },
       2 * 2000,  // two seconds before slow_cancel

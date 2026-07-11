@@ -49,6 +49,10 @@ describe('parse', () => {
     test_right_assoc('∨', or)
     test_right_assoc('→', imp)
     test_right_assoc('↔', iff)
+    test_parse('A & B ∨ C', or(and(A, B), C))
+    test_parse('A ∨ B & C', or(A, and(B, C)))
+    test_parse('A ∨ B → C & D', imp(or(A, B), and(C, D)))
+    test_parse('A → B ↔ C', iff(imp(A, B), C))
   })
   describe('RealExpr', () => {
     const parse = assert_parse_real_expr
@@ -76,6 +80,13 @@ describe('parse', () => {
     test_parse('-40 ^ 30', neg(power(lit(40), lit(30))))
     test_parse('1 * 2 / 3 * 4', multiply(divide(multiply(lit(1), lit(2)), lit(3)), lit(4)))
     test_parse('2^(-3)', power(lit(2), neg(lit(3))))
+    test_parse('2^-3', power(lit(2), neg(lit(3))))
+    test_parse('-2^2', neg(power(lit(2), lit(2))))
+    test('preserves integer literals beyond JavaScript safe precision', () => {
+      expect(parse('9007199254740993')).toEqual({
+        tag: 'literal', value: 9007199254740992, source: '9007199254740993'
+      })
+    })
     test_parse('68479.42137390701 / -GSF', divide(lit(68479.42137390701), neg(vbl('GSF'))))
     test_parse('(OSB - -62076.49847564241) * 18062.68360562343', multiply(minus(vbl('OSB'), neg(lit(62076.49847564241))), lit(18062.68360562343)))
     test_parse('-21.592482924461365^2', neg(power(lit(21.592482924461365), lit(2))))
@@ -128,6 +139,11 @@ describe('parse', () => {
     test_right_assoc('∨', cor)
     test_right_assoc('→', cimp)
     test_right_assoc('↔', ciff)
+    const [c1, c2, c3, c4] = [eq(lit(1), lit(1)), eq(lit(2), lit(2)), eq(lit(3), lit(3)), eq(lit(4), lit(4))]
+    test_parse('1 = 1 & 2 = 2 ∨ 3 = 3', cor(cand(c1, c2), c3))
+    test_parse('1 = 1 ∨ 2 = 2 & 3 = 3', cor(c1, cand(c2, c3)))
+    test_parse('1 = 1 ∨ 2 = 2 → 3 = 3 & 4 = 4', cimp(cor(c1, c2), cand(c3, c4)))
+    test_parse('~ (1 = 2)', cnot(eq(lit(1), lit(2))))
   })
 
   // const random = new Random()

@@ -609,21 +609,14 @@ const display_polynomial_term = (c: number, degree: number): Node => {
 }
 
 const display_polynomial = (coefficients: number[]): Node => {
-  const cs = coefficients
   const final_node = math_el('mrow', {})
-  for (const [index, c] of cs.entries()) {
-    const degree = cs.length - index - 1
-    if (c === 0) {
-      continue
-    }
-
-    const term = display_polynomial_term(c, degree)
-    final_node.appendChild(term)
-
-    if (index !== cs.length - 1) {
-      const p = math_el('mo', {}, '+')
-      final_node.appendChild(p)
-    }
+  const terms = coefficients
+    .map((c, index) => ({ c, degree: coefficients.length - index - 1 }))
+    .filter(({ c }) => c !== 0)
+  if (terms.length === 0) return math_el('mn', {}, '0')
+  for (const [index, { c, degree }] of terms.entries()) {
+    if (index > 0) final_node.appendChild(math_el('mo', {}, c < 0 ? '-' : '+'))
+    final_node.appendChild(display_polynomial_term(index === 0 ? c : Math.abs(c), degree))
   }
   return final_node
 }
@@ -662,7 +655,7 @@ const model_assignment_display = (ma: ModelAssignmentOutput): Node => {
   }
   const sub = (ma: ModelAssignmentOutput): Node => {
     if (ma.tag === 'literal') {
-      return numberToMathML(ma.value)
+      return ma.source === undefined ? numberToMathML(ma.value) : math_el('mn', {}, ma.source)
     } else if (ma.tag === 'negative') {
       return math_el('mrow', {}, math_el('mo', {}, '-'), sub(ma.inner))
     } else if (ma.tag === 'rational') {
@@ -671,7 +664,7 @@ const model_assignment_display = (ma: ModelAssignmentOutput): Node => {
       return quad_root_to_display(ma.a, ma.b, ma.c, ma.index)
     } else if (ma.tag === 'surd') {
       // Display a + b√c
-      const sqrtC = math_el('msqrt', {}, math_el('mn', {}, ma.c.toString()))
+      const sqrtC = math_el('msqrt', {}, math_el('mn', {}, ma.cSource ?? ma.c.toString()))
 
       // Check if a is zero
       const aIsZero = ma.a.tag === 'literal' && ma.a.value === 0
@@ -1309,13 +1302,15 @@ const timeout = (timeout_ms: Editable<number>) => {
   const si = tel(TestId.timeout.seconds, 'input', { style: 'margin-right: 0.5ch; width: 5ch;', type: 'number', min: MIN_SECS.toString(), max: MAX_SECS.toString(), value: default_secs.toString() }) as HTMLInputElement
 
   const set_timeout_ms = () => {
-    const s = parseInt(si.value)
+    const parsed = parseInt(si.value)
+    const s = Number.isFinite(parsed) ? parsed : default_secs
     timeout_ms.set(s * 1000)
   }
 
   si.onchange = () => {
     const parsed = parseInt(si.value)
-    const value = Math.max(MIN_SECS, Math.min(parsed, MAX_SECS))
+    const bounded = Number.isFinite(parsed) ? parsed : default_secs
+    const value = Math.max(MIN_SECS, Math.min(bounded, MAX_SECS))
     si.value = value.toString()
     set_timeout_ms()
   }
@@ -1414,7 +1409,7 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
   const set_all_constraints = (all_constraints: Constraint[] | undefined) => {
     // console.log('on_ready', all_constraints?.map(constraint_to_string))
     invalidate()
-    if (all_constraints === undefined) {
+    if (all_constraints === undefined || all_constraints.length === 0) {
       generate_button.disabled = true
     } else {
       generate_button.disabled = false
@@ -1539,7 +1534,8 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
     cancel_button.onclick = () => {
       const state = state2.get()
       if (state.tag !== 'looking') {
-        throw new Error(`Trying to cancel while not looking for a model!\nstate: ${JSON.stringify(state)}`)
+        cancel_button.disabled = true
+        return
       }
       cancel(state.abort_controller)
     }
@@ -1593,12 +1589,11 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
   })().catch(() => {})
 
   const start_search_solver = async (solver: WrappedSolver, constraints: Constraint[]): Promise<void> => {
-    const truth_table = new TruthTable(variables_in_constraints(constraints))
-    // state.set({ tag: 'looking', truth_table })
-    const abort_controller = new AbortController()
-    state2.set({ tag: 'looking', truth_table, abort_controller })
-    model_container.innerHTML = ''
     try {
+      const truth_table = new TruthTable(variables_in_constraints(constraints))
+      const abort_controller = new AbortController()
+      state2.set({ tag: 'looking', truth_table, abort_controller })
+      model_container.innerHTML = ''
       // Run the LPS solver for PopperSAT
       const lpsResult = await solveLPS(solver, truth_table, constraints, undefined, abort_controller.signal, timeout_ms.get())
 
@@ -1634,34 +1629,41 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
               if (result.tag === 'rational') {
                 // Return as rational for proper fraction display
                 const r = result.value
+                const literalOutput = (value: bigint): ModelAssignmentOutput => ({
+                  tag: 'literal', value: Number(value), source: value.toString()
+                })
                 if (r.denom === 1n) {
-                  return { tag: 'result', result: { tag: 'literal', value: Number(r.numer) } }
+                  return { tag: 'result', result: literalOutput(r.numer) }
                 }
                 return {
                   tag: 'result',
                   result: {
                     tag: 'rational',
-                    numerator: { tag: 'literal', value: Number(r.numer) },
-                    denominator: { tag: 'literal', value: Number(r.denom) }
+                    numerator: literalOutput(r.numer),
+                    denominator: literalOutput(r.denom)
                   }
                 }
               } else if (result.tag === 'surd') {
                 // Return as surd for exact algebraic display
                 const s = result.value
+                const literalOutput = (value: bigint): ModelAssignmentOutput => ({
+                  tag: 'literal', value: Number(value), source: value.toString()
+                })
                 // Convert rational parts to ModelAssignmentOutput
                 const aOutput = s.a.denom === 1n
-                  ? { tag: 'literal' as const, value: Number(s.a.numer) }
-                  : { tag: 'rational' as const, numerator: { tag: 'literal' as const, value: Number(s.a.numer) }, denominator: { tag: 'literal' as const, value: Number(s.a.denom) } }
+                  ? literalOutput(s.a.numer)
+                  : { tag: 'rational' as const, numerator: literalOutput(s.a.numer), denominator: literalOutput(s.a.denom) }
                 const bOutput = s.b.denom === 1n
-                  ? { tag: 'literal' as const, value: Number(s.b.numer) }
-                  : { tag: 'rational' as const, numerator: { tag: 'literal' as const, value: Number(s.b.numer) }, denominator: { tag: 'literal' as const, value: Number(s.b.denom) } }
+                  ? literalOutput(s.b.numer)
+                  : { tag: 'rational' as const, numerator: literalOutput(s.b.numer), denominator: literalOutput(s.b.denom) }
                 return {
                   tag: 'result',
                   result: {
                     tag: 'surd',
                     a: aOutput,
                     b: bOutput,
-                    c: Number(s.c)
+                    c: Number(s.c),
+                    cSource: s.c.toString()
                   }
                 }
               } else {
@@ -1739,18 +1741,15 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
       if (popperResult.solver_output.status === 'sat' && truth_table.n_letters() > 0) {
         const save_table_image_button = el('input', { type: 'button', value: 'Save table as image', style: 'margin-top: 0.4em;' }) as HTMLButtonElement
         save_table_image_button.onclick = async () => {
+          const originalPadding = model_container.style.paddingBottom
           try {
             // Add temporary padding to prevent cutoff
-            const originalPadding = model_container.style.paddingBottom
             model_container.style.paddingBottom = '20px'
 
             const dataUrl = await htmlToImage.toPng(model_container, {
               backgroundColor: '#ffffff',
               pixelRatio: 2, // Higher quality
             })
-
-            // Restore original padding
-            model_container.style.paddingBottom = originalPadding
 
             const a = document.createElement('a')
             a.href = dataUrl
@@ -1761,16 +1760,16 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
           } catch (e: any) {
             console.error('Failed to save table as image:', e)
             alert('Failed to save table: ' + e.message)
+          } finally {
+            model_container.style.paddingBottom = originalPadding
           }
         }
         constraints_view.appendChild(save_table_image_button)
       }
     }
     catch (e: any) {
+      state_display.innerHTML = ''
       state2.set({ tag: 'exception', message: e.message })
-      status_container.appendChild(el('div', { style: 'color: red;' },
-        tel(TestId.exception_id, 'div', {}, 'Exception!'),
-        e.message))
       console.error(e.stack)
     }
   }
@@ -1853,6 +1852,9 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
 
     model_part.classList.remove('invalidated')
     cancel_button.disabled = true
+    for (const input of timeout_input.getElementsByTagName('input')) {
+      input.disabled = state.tag === 'looking'
+    }
     if (state.tag === 'waiting') {
       right_side.innerHTML = ''
       state_display.innerHTML = ''
@@ -1860,7 +1862,8 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
       model_part.classList.add('invalidated')
       model_container.innerHTML = ''
       constraints_view.innerHTML = ''
-      generate_button.disabled = false
+      const constraints = constraint_block.get_output()
+      generate_button.disabled = constraints === undefined || constraints.length === 0
     } else if (state.tag === 'looking') {
       state_display.innerHTML = ''
       state_display.append(Constants.SEARCH)
@@ -1973,7 +1976,11 @@ const model_finder_display = (constraint_block: InputBlockLogic<Constraint, Spli
       state_display.append('No up-to-date model to display')
       model_part.classList.add('invalidated')
     } else if (state.tag === 'exception') {
-      generate_button.disabled = false
+      state_display.innerHTML = ''
+      state_display.appendChild(el('span', { style: 'color: red;' },
+        tel(TestId.exception_id, 'span', {}, 'Exception! '), state.message))
+      const constraints = constraint_block.get_output()
+      generate_button.disabled = constraints === undefined || constraints.length === 0
     } else {
       fallthrough('model_finder_display.state.watch', state)
     }
@@ -2149,8 +2156,14 @@ const main = (): HTMLElement => {
     global_error_display.style.display = 'block'
   }
 
+  const unknown_error_to_string = (error: unknown): string => {
+    if (error instanceof Error) return error.message
+    if (typeof error === 'string') return error
+    try { return JSON.stringify(error) } catch { return String(error) }
+  }
+
   window.onunhandledrejection = (event) => {
-    show_error(JSON.stringify(event.reason))
+    show_error(unknown_error_to_string(event.reason))
   }
 
   window.onerror = (event, source, lineno, colno, error) => {

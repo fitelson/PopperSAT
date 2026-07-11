@@ -15,24 +15,23 @@ To insert a [Constraint], type in one of:
 - '[RealExpr] ≠ [RealExpr]' or '[RealExpr] != [RealExpr]' for disequality,
 - '[RealExpr] < [RealExpr]' for less than,
 - '[RealExpr] > [RealExpr]' for greater than,
-- '[RealExpr] ≤ [RealExpr]' or '[RealExpr] <= [RealExpr] for less than or equal to,'
-- '[RealExpr] ≥ [RealExpr]' or '[RealExpr] >= [RealExpr] for greater than or equal to,'
+- '[RealExpr] ≤ [RealExpr]' or '[RealExpr] <= [RealExpr]' for less than or equal to,
+- '[RealExpr] ≥ [RealExpr]' or '[RealExpr] >= [RealExpr]' for greater than or equal to,
 - '~[Constraint]', '![Constraint]', or '-[Constraint]' for negation,
 - '[Constraint] ∨ [Constraint]' or '[Constraint] \\/ [Constraint]' for disjunction (hint: the '∨' is NOT a v),
-- '[Constraint] & [Constraint]' for conjunction,
-- '[Constraint] → [Constraint]', '[Constraint] -> [Constraint]', or '[Constraint] > [Constraint]' for biconditional,
+- '[Constraint] & [Constraint]' or '[Constraint] /\\ [Constraint]' for conjunction,
+- '[Constraint] → [Constraint]', '[Constraint] -> [Constraint]', or '[Constraint] > [Constraint]' for conditional,
 - '[Constraint] ↔ [Constraint]', '[Constraint] <-> [Constraint]', or '[Constraint] <> [Constraint]' for biconditional.
 
 To insert a [RealExpr], type in one of:
 - Any number (integer or decimal),
-- 'Pr([Sentence])' for probability,
 - 'Pr([Sentence] | [Sentence])' for conditional probability,
 - '-[RealExpr]' for negatives,
 - '[RealExpr] + [RealExpr]' for addition,
 - '[RealExpr] - [RealExpr]' for subtraction,
 - '[RealExpr] * [RealExpr]' for multiplication,
 - '[RealExpr] / [RealExpr]' for division,
-- '[RealExpr]^[RealExpr]' for exponentiation.
+- '[RealExpr]^[IntegerLiteral]' for exponentiation (absolute exponent at most 1024; a negative exponent requires a nonzero base).
 
 To insert a [Sentence], type in one of:
 - '⊤' or 'true' for truth (hint: the ⊤ is read as 'top', not 'tee'),
@@ -40,9 +39,12 @@ To insert a [Sentence], type in one of:
 - Any upper-case letter for propositional variable, optionally followed by an integer > 0,
 - '~[Sentence]', '![Sentence]', or '-[Sentence]' for negation,
 - '[Sentence] ∨ [Sentence]' or '[Sentence] \\/ [Sentence]' for disjunction (hint: the '∨' is NOT a v),
-- '[Sentence] & [Sentence]' for conjunction,
-- '[Sentence] → [Sentence]', '[Sentence] -> [Sentence]', or '[Sentence] > [Sentence]' for biconditional,
+- '[Sentence] & [Sentence]' or '[Sentence] /\\ [Sentence]' for conjunction,
+- '[Sentence] → [Sentence]', '[Sentence] -> [Sentence]', or '[Sentence] > [Sentence]' for conditional,
 - '[Sentence] ↔ [Sentence]', '[Sentence] <-> [Sentence]', or '[Sentence] <> [Sentence]' for biconditional.
+
+Logical precedence (tightest to loosest) is negation, conjunction, disjunction, conditional, then biconditional.
+PopperSAT supports at most 12 distinct sentence letters (4,096 truth-table states).
 `.trim()
 export const CONSTRAINT_OR_REAL_EXPR_INPUT_INSTRUCTIONS = `
 You can either insert a Constraint or a Real Expression.
@@ -62,4 +64,3 @@ export const NO_MODEL = 'No model to evaluate!'
 
 export const CANCEL_OVERRIDE_TIMEOUT_MS = 5 * 1000
 export const DEFAULT_SOLVE_TIMEOUT_MS = 1 * 1000 * 60
-
