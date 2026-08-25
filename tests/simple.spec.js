@@ -17,7 +17,7 @@ const URL = 'http://127.0.0.1:5173/'
 const DEFAULT_TIMEOUT = 20_000
 
 const to_load = async (page) => {
-  await page.goto(URL)
+  await page.goto(URL, { waitUntil: 'domcontentloaded' })
   await expect(page.getByTestId(TestId.z3_status)).toBeEmpty({ timeout: DEFAULT_TIMEOUT })
 }
 
